@@ -1,0 +1,51 @@
+name: Bug report
+description: Something isn't working as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! For **security vulnerabilities**, do not file here —
+        see [SECURITY.md](../blob/main/SECURITY.md) and use private advisories.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+      placeholder: Pulling a namespace after a quota error returns stale data...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands or code. Redact passphrases, keys, and real memory content.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface?
+      options:
+        - Server (src/)
+        - Client / CLI (client/, bin/)
+        - MCP server (memlawb mcp)
+        - Self-host / deploy
+        - Other / not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: memlawb version
+      placeholder: 0.1.0 (or commit SHA)
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: Bun 1.1.x, macOS 15, STORE=fs
+    validations:
+      required: false

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/Gitlawb/memlawb/security/advisories/new
+    about: Do NOT open a public issue for security bugs. Use private advisories — see SECURITY.md.
+  - name: 💬 Questions & discussion
+    url: https://github.com/Gitlawb/memlawb/discussions
+    about: Usage questions, ideas, and general discussion.

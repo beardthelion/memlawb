@@ -1,0 +1,10 @@
+# Default owners for everything in the repo.
+* @Gitlawb/maintainers
+
+# Security-sensitive areas warrant extra review.
+/client/crypto.ts      @Gitlawb/maintainers
+/client/secretscan.ts  @Gitlawb/maintainers
+/src/auth.ts           @Gitlawb/maintainers
+/src/quota.ts          @Gitlawb/maintainers
+/src/namespace.ts      @Gitlawb/maintainers
+/SECURITY.md           @Gitlawb/maintainers

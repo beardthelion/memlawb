@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.1'
+      - run: bun install --frozen-lockfile
+      - name: Lint & format (Biome)
+        run: bunx biome ci
+      - name: Type-check
+        run: bun run type-check
+      - name: Test
+        run: bun test
