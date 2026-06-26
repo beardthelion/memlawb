@@ -1,8 +1,35 @@
-# memlawb
+```
+╭──────────────────────────────────────────────────────────────────────╮
+│  ● ● ●            memlawb — ~/memory                          ⌘ + T    │
+├──────────────────────────────────────────────────────────────────────┤
+
+    ███╗   ███╗ ███████╗ ███╗   ███╗ ██╗      █████╗ ██╗    ██╗ ██████╗
+    ████╗ ████║ ██╔════╝ ████╗ ████║ ██║     ██╔══██╗██║    ██║ ██╔══██╗
+    ██╔████╔██║ █████╗   ██╔████╔██║ ██║     ███████║██║ █╗ ██║ ██████╔╝
+    ██║╚██╔╝██║ ██╔══╝   ██║╚██╔╝██║ ██║     ██╔══██║██║███╗██║ ██╔══██╗
+    ██║ ╚═╝ ██║ ███████╗ ██║ ╚═╝ ██║ ███████╗██║  ██║╚███╔███╔╝ ██████╔╝
+    ╚═╝     ╚═╝ ╚══════╝ ╚═╝     ╚═╝ ╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝  ╚═════╝
+
+      zero-knowledge agent memory · the host cannot read it
+
+    $ memlawb push ./memories user:me
+      ⠿ scan secrets    ✓  0 leaked
+      ⠿ encrypt  12     ✓  aes-256-gcm · key derived locally, never sent
+      ⠿ delta sync   →  memory.gitlawb.com
+        ↑ 3 changed   · 9 unchanged   ✓ server saw only ciphertext
+    $ ▮
+
+╰──────────────────────────────────────────────────────────────────────╯
+```
+
+<div align="center">
 
 [![CI](https://github.com/Gitlawb/memlawb/actions/workflows/ci.yml/badge.svg)](https://github.com/Gitlawb/memlawb/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@gitlawb/memlawb.svg)](https://www.npmjs.com/package/@gitlawb/memlawb)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
+[![Bun](https://img.shields.io/badge/bun-%3E%3D1.2-black?logo=bun)](https://bun.sh)
+
+</div>
 
 **Open-source, self-hostable, zero-knowledge agent memory.**
 The memory layer of the agent stack — give any agent durable memory it can
@@ -218,6 +245,5 @@ threat model.
 
 ## License
 
-Dual-licensed under [MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE), at
-your option. Contributions are accepted under the same dual license (see the
-SPDX headers and [CONTRIBUTING.md](./CONTRIBUTING.md)).
+Released under the [MIT License](./LICENSE). Contributions are accepted under
+the same license (see [CONTRIBUTING.md](./CONTRIBUTING.md)).

@@ -126,6 +126,5 @@ identity. No CLA.
 
 ## License
 
-By contributing, you agree your contributions are dual-licensed under
-[MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE), at the user's option,
-matching the project license.
+By contributing, you agree your contributions are licensed under the
+[MIT License](./LICENSE), matching the project license.

@@ -102,7 +102,7 @@ so the remote memlawb server still only sees ciphertext.
 ## 6. Build phases
 
 **Phase 0 — Spec & scaffold (this doc + repo).**
-- Create `Gitlawb/memlawb` OSS repo (dual MIT/Apache, release-please + GHCR — match node).
+- Create `Gitlawb/memlawb` OSS repo (MIT, release-please + GHCR — match node).
 - Lock crypto choices, API schema (Zod), namespace/ACL model.
 
 **Phase 1 — Hosted MVP, openclaude drop-in (highest leverage).**

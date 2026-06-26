@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Open-source, self-hostable, zero-knowledge agent memory — server, client, CLI, and MCP in one package",
   "type": "module",
-  "license": "(MIT OR Apache-2.0)",
+  "license": "MIT",
   "author": "Gitlawb",
   "homepage": "https://github.com/Gitlawb/memlawb#readme",
   "repository": {
@@ -26,7 +26,7 @@
     "claude"
   ],
   "engines": {
-    "bun": ">=1.1.0"
+    "bun": ">=1.2.0"
   },
   "publishConfig": {
     "access": "public"
@@ -41,7 +41,7 @@
     "skills",
     "migrations",
     "*.md",
-    "LICENSE*"
+    "LICENSE"
   ],
   "scripts": {
     "dev": "bun run --watch src/index.ts",

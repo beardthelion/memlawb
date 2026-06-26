@@ -64,7 +64,7 @@ The product *works* today for a self-hosting CLI user. v0.1 is about making it
 5. **Single npm package** `@gitlawb/memlawb` published — server, client, CLI, MCP
    in one (`bunx -y @gitlawb/memlawb mcp`).
 6. **OSS hygiene** — CI (test + typecheck + GHCR image), release-please, docs
-   accurate to shipped behavior, dual-license headers.
+   accurate to shipped behavior, MIT license.
 
 ### Explicitly NOT in v0.1 (fast-follows, tracked in PLAN.md)
 - ❌ Billing / paid tiers (free beta; quotas only).
@@ -140,7 +140,7 @@ Fly app (or a tiny Next on Vercel hitting Supabase).
 ### M5 — Release engineering & launch · ~1–2d
 - **CI** (GitHub Actions): `bun test` + `tsc --noEmit` on PR; on tag, publish npm
   + build/push GHCR image (match `node` repo's release-please + GHCR pattern).
-- **release-please** for dual MIT/Apache OSS repo `Gitlawb/memlawb`.
+- **release-please** for MIT-licensed OSS repo `Gitlawb/memlawb`.
 - **Deploy** `memory.gitlawb.com` (Fly, `STORE=s3` Tigris, Supabase secrets set).
 - **Smoke test in prod**: real API key → MCP save/recall round-trip → confirm
   ciphertext-at-rest via Tigris object inspection.
