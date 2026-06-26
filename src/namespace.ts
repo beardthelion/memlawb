@@ -70,9 +70,11 @@ export function validateEntryKey(key: string): string {
  * and `/` to `__`, and `_` is a legal namespace char, so `user:a/b` and
  * `user:a__b` both became `user__a__b` — cross-tenant storage collision. The
  * tradeoff for hashing is opaque directory names: entry keys still live
- * (plaintext) in each manifest, but the namespace string is stored nowhere, so
- * namespace→dir is one-way (sha256(ns)) and a bare directory can't be mapped
- * back to its namespace without a known namespace list.
+ * (plaintext) in each manifest, and the manifest carries no namespace field, so
+ * namespace→dir is one-way (sha256(ns)) and a bare `ns/<slug>/` dir can't be
+ * mapped back to its namespace without a known namespace list. (The raw
+ * namespace string is still recorded in the owner's own quota record,
+ * `owners/<sha256(owner)>/usage.json` — not in the ns/ tree.)
  */
 export function namespaceSlug(ns: string): string {
   return sha256Hex(ns)
