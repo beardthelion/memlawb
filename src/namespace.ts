@@ -60,9 +60,11 @@ export function validateEntryKey(key: string): string {
  * (and its `ns:<slug>` write lock) from another's, so it must be injective: two
  * distinct namespaces must never share a slug. We hash the namespace with
  * sha256 — the same way entry keys become flat blob filenames
- * (`entryPath(nsSlug, sha256Hex(key))`). Hashing is injective by construction,
- * all-lowercase-hex (so case-insensitive filesystems can't re-collide it), and
- * needs no per-grammar reasoning.
+ * (`entryPath(nsSlug, sha256Hex(key))`). sha256 is collision-resistant (finding
+ * two distinct namespaces with the same slug is computationally infeasible, not
+ * impossible by construction), the output is all-lowercase-hex (so
+ * case-insensitive filesystems can't re-collide it), and it needs no per-grammar
+ * reasoning.
  *
  * The earlier `replace(/[:/]/g, '__')` was NOT injective: it collapsed both `:`
  * and `/` to `__`, and `_` is a legal namespace char, so `user:a/b` and

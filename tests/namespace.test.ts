@@ -74,15 +74,22 @@ describe('namespaceSlug (injective storage key)', () => {
     expect(slugs.size).toBe(namespaces.length)
   })
 
-  test('produces a flat, path-safe segment (no : or /)', () => {
+  // Pin the full output alphabet, not just absence of : and /. All-lowercase
+  // 64-hex is what makes the slug path-safe AND case-insensitive-fs-safe; a
+  // future swap to base64/uppercase-hex would silently drop that guard while
+  // every other test still passed.
+  test('produces a flat, path-safe 64-char lowercase-hex segment', () => {
     for (const ns of ['user:alice', 'repo:o/n', 'user:a/b/c', 'user:a__b']) {
-      const slug = namespaceSlug(ns)
-      expect(slug.includes('/')).toBe(false)
-      expect(slug.includes(':')).toBe(false)
+      expect(namespaceSlug(ns)).toMatch(/^[0-9a-f]{64}$/)
     }
   })
 
-  test('is deterministic', () => {
-    expect(namespaceSlug('repo:o/n')).toBe(namespaceSlug('repo:o/n'))
+  // Pin a known input→slug so the exact algorithm is locked: swapping sha256
+  // for another hash (which would orphan all stored data) fails here loudly,
+  // and the literal also re-asserts determinism non-vacuously.
+  test('pins the slug to sha256 hex of the namespace', () => {
+    expect(namespaceSlug('user:alice')).toBe(
+      'dabd1db8d35ab13106274f61f1bf977812cce4f477b15014cf38fb796c50a4c4',
+    )
   })
 })
