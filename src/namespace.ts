@@ -10,6 +10,8 @@
  * server's port of openclaude's `validateTeamMemKey` path-traversal guard.
  */
 
+import { sha256Hex } from './hash.ts'
+
 export class InvalidNameError extends Error {}
 
 // Namespaces: lowercase scope + ':' + segment(s). Conservative allowlist.
@@ -52,12 +54,28 @@ export function validateEntryKey(key: string): string {
 }
 
 /**
- * Turn a namespace into a single filesystem/object-store-safe segment.
- * We hash the slash-bearing part so the on-disk/object layout is always flat
- * and free of nested-path surprises, while staying deterministic.
+ * Turn a namespace into a single flat, path-safe storage segment.
+ *
+ * The slug is the ONLY thing separating one tenant's `ns/<slug>/...` storage
+ * (and its `ns:<slug>` write lock) from another's, so it must be injective: two
+ * distinct namespaces must never share a slug. We hash the namespace with
+ * sha256 — the same way entry keys become flat blob filenames
+ * (`entryPath(nsSlug, sha256Hex(key))`). sha256 is collision-resistant (finding
+ * two distinct namespaces with the same slug is computationally infeasible, not
+ * impossible by construction), the output is all-lowercase-hex (so
+ * case-insensitive filesystems can't re-collide it), and it needs no per-grammar
+ * reasoning.
+ *
+ * The earlier `replace(/[:/]/g, '__')` was NOT injective: it collapsed both `:`
+ * and `/` to `__`, and `_` is a legal namespace char, so `user:a/b` and
+ * `user:a__b` both became `user__a__b` — cross-tenant storage collision. The
+ * tradeoff for hashing is opaque directory names: entry keys still live
+ * (plaintext) in each manifest, and the manifest carries no namespace field, so
+ * namespace→dir is one-way (sha256(ns)) and a bare `ns/<slug>/` dir can't be
+ * mapped back to its namespace without a known namespace list. (The raw
+ * namespace string is still recorded in the owner's own quota record,
+ * `owners/<sha256(owner)>/usage.json` — not in the ns/ tree.)
  */
 export function namespaceSlug(ns: string): string {
-  // Replace the scope separator and any slashes with '__'. Already validated,
-  // so this only needs to be reversible-enough for debugging, not perfectly.
-  return ns.replace(/[:/]/g, '__')
+  return sha256Hex(ns)
 }
