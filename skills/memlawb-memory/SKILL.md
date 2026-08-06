@@ -1,6 +1,6 @@
 ---
 name: memlawb-memory
-description: Durable cross-session memory for the agent, backed by the memlawb MCP tools (memory_save / memory_recall / memory_search / memory_list / memory_delete). Use at the START of a task to recall what you already know about this user and project, and WHENEVER you learn a durable fact (a preference, a project decision, a convention, or feedback on how to work) so it survives into future sessions. Memory is end-to-end encrypted — the server cannot read it.
+description: Durable cross-session memory for the agent, backed by the memlawb MCP tools (memory_save / memory_recall / memory_search / memory_get / memory_list / memory_delete). Use at the START of a task to recall what you already know about this user and project, and WHENEVER you learn a durable fact (a preference, a project decision, a convention, or feedback on how to work) so it survives into future sessions. Memory is end-to-end encrypted — the server cannot read it.
 ---
 
 # memlawb memory
@@ -58,6 +58,8 @@ If asked to "remember" something already in the repo, save instead what was
   layout; `content` is markdown. Saving the same `key` overwrites it.
 - `memory_recall(query, limit?)` — relevance-ranked entries for a query.
 - `memory_search(query)` — literal substring/keyword search.
+- `memory_get(key)` — the full, untruncated body of one entry. Use it when
+  recall or search surfaces an entry you need to read in full.
 - `memory_list()` — list entry keys without downloading content.
 - `memory_delete(key)` — remove an entry that's wrong or stale.
 

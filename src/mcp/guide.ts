@@ -28,7 +28,7 @@ You have durable, end-to-end-encrypted memory via the memlawb MCP tools.
   \`memory_delete\` facts that are wrong or stale; keep a \`MEMORY.md\` index.
 
 Tools: memory_save(key, content) · memory_recall(query, limit?) ·
-memory_search(query) · memory_list() · memory_delete(key).`
+memory_search(query) · memory_get(key) · memory_list() · memory_delete(key).`
 
 function stripFrontmatter(md: string): string {
   const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(md)
