@@ -24,8 +24,17 @@ You have durable, end-to-end-encrypted memory via the memlawb MCP tools.
   preference, a project decision, a convention, or feedback on how to work —
   persist it with \`memory_save\`. Skip transient context and anything obvious
   from the repo. Never save secrets.
+- **When recall finds nothing.** A miss reports how many entries were searched
+  and how many scored below the relevance floor; those entries are withheld, not
+  summarized. Do not conclude the fact is unrecorded: call \`memory_list\`, read
+  any plausible key with \`memory_get\`, and try \`memory_search\` for an exact
+  term. Save a new entry only after those come back empty, or you leave two
+  copies that disagree later. An empty namespace says so with its own message.
 - **Maintain it.** Search before adding to avoid duplicates; update or
   \`memory_delete\` facts that are wrong or stale; keep a \`MEMORY.md\` index.
+  Recall never returns \`MEMORY.md\` (an index matches every query and answers
+  none), but it stays worth keeping as the table of contents you read
+  deliberately with \`memory_get\`, or alongside \`memory_list\` when orienting.
 
 Tools: memory_save(key, content) · memory_recall(query, limit?) ·
 memory_search(query) · memory_get(key) · memory_list() · memory_delete(key).`
