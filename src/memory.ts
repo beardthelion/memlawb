@@ -71,6 +71,7 @@ export async function getHashes(namespace: string, nsSlug: string): Promise<Memo
     lastModified: m.lastModified,
     checksum: namespaceChecksum(entryChecksums),
     entryChecksums,
+    erasure: getStore().erasure,
     supports: SUPPORTS,
   }
 }
@@ -247,6 +248,7 @@ export async function upsert(
       namespace,
       version: m.version,
       checksum: namespaceChecksum(checksumsFrom(m)),
+      erasure: store.erasure,
       accepted,
       deleted,
       skipped,
