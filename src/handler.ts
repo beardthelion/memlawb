@@ -66,7 +66,7 @@ export async function handleRequest(req: Request): Promise<Response> {
   const { pathname } = url
 
   if (pathname === '/health') {
-    return json({ ok: true, store: getStore().describe(), service: 'memlawb' })
+    return json({ ok: true, service: 'memlawb' })
   }
 
   const parsed = parseMemoryPath(pathname)
