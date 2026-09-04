@@ -10,9 +10,14 @@
  *
  * Each defect gets its own control and each control asserts WHICH diagnostic
  * fired, not merely that something did. A preflight that refused every
- * configuration would pass six one-sided refusal tests; `markerOf` below makes
- * that impossible by classifying the diagnostic into exactly one bucket, and
- * the two ready-configuration tests are the negative controls beside them.
+ * configuration would pass a pile of one-sided refusal tests; `markerOf` below
+ * makes that impossible by classifying the diagnostic into exactly one bucket,
+ * and the ready-configuration tests are the negative controls beside them.
+ *
+ * The same rule covers the non-fatal warnings: each is asserted in both states,
+ * present against a deployment that earns it and absent against one that does
+ * not, because a warning emitted unconditionally passes every test that only
+ * looks for it.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -34,9 +39,9 @@ beforeAll(async () => {
 afterAll(() => server?.stop(true))
 
 /**
- * Which of the six diagnostics this text is, by a phrase unique to it. Returns
- * 'other' for anything unclassified, so a reworded diagnostic fails loudly
- * rather than quietly matching a neighbour.
+ * Which diagnostic this text is, by a phrase unique to it. Returns 'other' for
+ * anything unclassified, so a reworded diagnostic, or a new refusal that nobody
+ * added a marker for, fails loudly rather than quietly matching a neighbour.
  */
 function markerOf(text: string): string {
   const table: [string, RegExp][] = [
@@ -46,10 +51,27 @@ function markerOf(text: string): string {
     ['rejected-key', /rejected the service key/],
     ['unauthorized-namespace', /refused namespace/],
     ['undecryptable', /cannot decrypt the existing entries/],
+    ['unservable', /but served none of them/],
+    ['read-failed', /failed before anything could be decrypted/],
+    ['invalid-scan-mode', /which is not a scan mode/],
+    ['server-refused', /refused the startup read/],
   ]
   const hits = table.filter(([, re]) => re.test(text)).map(([name]) => name)
   return hits.length === 1 ? (hits[0] as string) : `other(${hits.join('+') || 'none'})`
 }
+
+/**
+ * A server that answers each path+view differently. The one-shot `stub` below
+ * cannot express the interesting shapes here, which all need the hashes view
+ * and the full read to disagree.
+ */
+function routeStub(route: (req: Request) => Response | Promise<Response>) {
+  const s = Bun.serve({ port: 0, fetch: route })
+  return { url: `http://localhost:${s.port}`, stop: () => s.stop(true) }
+}
+
+const json = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
 /** A one-shot server that answers every request the same way. */
 function stub(status: number, body: unknown) {
@@ -90,6 +112,17 @@ describe('mcp startup preflight', () => {
     await new MemlawbClient({ url, passphrase: PASSPHRASE }).push(ns, { 'a.md': 'hi' })
     const denier = stub(401, { error: { code: 'unauthorized' } })
     const forbidder = stub(403, { error: { code: 'forbidden' } })
+    // The two paths that interpolate a fully server-controlled string into a
+    // diagnostic: an unmapped status from the hashes read, and an HTTP error
+    // raised by the pull. They are where an absence claim is worth the least
+    // and needed the most, and neither was in this matrix.
+    const SERVER_TEXT = 'zzz-server-controlled-zzz'
+    const unmapped = stub(503, { error: { code: 'overloaded', note: SERVER_TEXT } })
+    const pullFails = routeStub(req =>
+      new URL(req.url).search.includes('view=hashes')
+        ? json(200, { version: 1, entryChecksums: { 'note.md': 'deadbeef' }, supports: [] })
+        : json(500, { error: { code: 'internal', note: SERVER_TEXT } }),
+    )
 
     const cases: Record<string, string | undefined>[] = [
       { MEMLAWB_PASSPHRASE: `${UNEXPANDED_PREFIX}${SECRET}`, MEMLAWB_API_KEY: APIKEY },
@@ -98,13 +131,18 @@ describe('mcp startup preflight', () => {
       { MEMLAWB_URL: denier.url, MEMLAWB_PASSPHRASE: SECRET, MEMLAWB_API_KEY: APIKEY },
       { MEMLAWB_URL: forbidder.url, MEMLAWB_PASSPHRASE: SECRET, MEMLAWB_API_KEY: APIKEY },
       { MEMLAWB_NAMESPACE: ns, MEMLAWB_PASSPHRASE: SECRET, MEMLAWB_API_KEY: APIKEY },
+      { MEMLAWB_URL: unmapped.url, MEMLAWB_PASSPHRASE: SECRET, MEMLAWB_API_KEY: APIKEY },
+      { MEMLAWB_URL: pullFails.url, MEMLAWB_PASSPHRASE: SECRET, MEMLAWB_API_KEY: APIKEY },
+      { MEMLAWB_SCAN: 'blcok', MEMLAWB_PASSPHRASE: SECRET, MEMLAWB_API_KEY: APIKEY },
     ]
     const seen: string[] = []
+    const serverRefusals: string[] = []
     for (const over of cases) {
       const r = await preflight(envFor(over))
       expect(r.ready).toBe(false)
       if (!r.ready) {
         seen.push(markerOf(r.diagnostic))
+        if (markerOf(r.diagnostic) === 'server-refused') serverRefusals.push(r.diagnostic)
         expect(`${markerOf(r.diagnostic)} leaks: ${r.diagnostic.includes(SECRET)}`).toBe(
           `${markerOf(r.diagnostic)} leaks: false`,
         )
@@ -113,8 +151,10 @@ describe('mcp startup preflight', () => {
     }
     denier.stop()
     forbidder.stop()
-    // Positive control: all six refusals were actually exercised. Without this
-    // the absence claim would hold just as well over an empty list.
+    unmapped.stop()
+    pullFails.stop()
+    // Positive control: every refusal was actually exercised. Without this the
+    // absence claim would hold just as well over an empty list.
     expect(seen).toEqual([
       'misexpansion',
       'missing-passphrase',
@@ -122,7 +162,14 @@ describe('mcp startup preflight', () => {
       'rejected-key',
       'unauthorized-namespace',
       'undecryptable',
+      'server-refused',
+      'server-refused',
+      'invalid-scan-mode',
     ])
+    // And the two server-refused cases really did carry the server's own text
+    // into the diagnostic. Without this the no-leak claim over them would hold
+    // over a diagnostic that interpolated nothing at all.
+    expect(serverRefusals.filter(d => d.includes(SERVER_TEXT))).toHaveLength(2)
   })
 
   test('a correct configuration against an empty namespace is ready', async () => {
@@ -225,9 +272,238 @@ describe('mcp startup preflight', () => {
     )
     expect(r.ready).toBe(true)
   })
+
+  test('a namespace whose listed entries cannot be served is refused, not called ready', async () => {
+    // The false-pass this guard exists for. The server lists an entry in the
+    // hashes view and serves no body for it (getData skips a manifest key whose
+    // blob is gone, and drops its checksum with it), so `pull` decrypts nothing
+    // and throws nothing. A preflight that only watched for a throw declared a
+    // deliberately WRONG passphrase ready.
+    const s = routeStub(req =>
+      new URL(req.url).search.includes('view=hashes')
+        ? json(200, { version: 3, entryChecksums: { 'note.md': 'deadbeef' }, supports: [] })
+        : json(200, { version: 3, content: { entries: {}, entryChecksums: {} } }),
+    )
+    try {
+      const r = await preflight(envFor({ MEMLAWB_URL: s.url, MEMLAWB_PASSPHRASE: WRONG }))
+      expect(r.ready).toBe(false)
+      expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('unservable')
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('an unrecognized MEMLAWB_SCAN is refused, and the three real modes are not', async () => {
+    // The value used to be cast straight to ScanMode, so `blcok` built a client
+    // whose scanner was in no mode at all and quietly stopped blocking live
+    // credentials. Nothing downstream would ever have said so.
+    const bad = await preflight(
+      envFor({ MEMLAWB_NAMESPACE: 'user:pf-scan', MEMLAWB_SCAN: 'blcok' }),
+    )
+    expect(bad.ready).toBe(false)
+    expect(markerOf(bad.ready ? '' : bad.diagnostic)).toBe('invalid-scan-mode')
+
+    // Negative control beside it: a guard that refused every value would pass
+    // the assertion above on its own.
+    const accepted: string[] = []
+    for (const mode of ['block', 'warn', 'off', undefined]) {
+      const r = await preflight(envFor({ MEMLAWB_NAMESPACE: 'user:pf-scan', MEMLAWB_SCAN: mode }))
+      accepted.push(`${mode}:${r.ready}`)
+    }
+    expect(accepted).toEqual(['block:true', 'warn:true', 'off:true', 'undefined:true'])
+  })
+
+  test('the validated scan mode is the one the client actually runs in', async () => {
+    // Validation is worthless if it stops the value reaching the client, and a
+    // default-vs-configured mix-up is invisible from the outside. `off` is the
+    // mode only an explicit setting can produce, so this fails if the wiring is
+    // dropped. AKIA... is the aws-access-key-id rule's shape.
+    const leak = { 'k.md': 'AKIAIOSFODNN7EXAMPLE is the key' }
+    const blocking = await preflight(envFor({ MEMLAWB_NAMESPACE: 'user:pf-scan-block' }))
+    if (!blocking.ready) throw new Error(blocking.diagnostic)
+    await expect(blocking.client.push('user:pf-scan-block', leak)).rejects.toThrow()
+
+    const off = await preflight(
+      envFor({ MEMLAWB_NAMESPACE: 'user:pf-scan-off', MEMLAWB_SCAN: 'off' }),
+    )
+    if (!off.ready) throw new Error(off.diagnostic)
+    await off.client.push('user:pf-scan-off', leak)
+  })
+
+  test('a server that does not enforce the write precondition warns but still starts', async () => {
+    // An older server is a supported deployment, so this can never refuse. It
+    // is worth saying out loud though: that server accepts a save that
+    // overwrites a newer entry without a word, and `preconditionEnforced` had
+    // no caller anywhere, so nobody was ever told.
+    const s = routeStub(() => json(200, { version: 0, entryChecksums: {}, supports: [] }))
+    try {
+      const old = await preflight(envFor({ MEMLAWB_URL: s.url }))
+      expect(old.ready).toBe(true)
+      expect(old.ready ? old.warnings.map(w => w.includes('write precondition')) : []).toEqual([
+        true,
+      ])
+    } finally {
+      s.stop()
+    }
+    // The other state, so this cannot pass by warning unconditionally: the real
+    // server advertises the precondition and must draw no warning at all.
+    const current = await preflight(envFor({ MEMLAWB_NAMESPACE: 'user:pf-empty' }))
+    expect(current.ready ? current.warnings : ['not ready']).toEqual([])
+  })
+
+  test('a partially servable namespace starts, with a warning naming the shortfall', async () => {
+    // The documented half of the drift decision: one entry decrypted, so the
+    // passphrase is proven and refusing would take memory away over a fault the
+    // key is innocent of. It must not pass silently either.
+    const ns = 'user:pf-partial'
+    await new MemlawbClient({ url, passphrase: PASSPHRASE }).push(ns, {
+      'a.md': 'one',
+      'b.md': 'two',
+    })
+    const s = routeStub(async req => {
+      const u = new URL(req.url)
+      const upstream = await fetch(`${url}${u.pathname}${u.search}`)
+      if (u.search.includes('view=hashes')) return upstream
+      const body = (await upstream.json()) as { content: { entries: Record<string, string> } }
+      delete body.content.entries['b.md'] // the drift: manifest keeps it, body gone
+      return json(200, body)
+    })
+    try {
+      const r = await preflight(envFor({ MEMLAWB_URL: s.url, MEMLAWB_NAMESPACE: ns }))
+      expect(r.ready).toBe(true)
+      expect(r.ready ? r.warnings.map(w => w.includes('served 1 of the 2 entries')) : []).toEqual([
+        true,
+      ])
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('a hostile entry key cannot forge lines or escapes in the diagnostic', async () => {
+    // The undecryptable diagnostic names the entry that failed, which is useful
+    // and is also text the server chose. Diagnostics land in a launcher's log,
+    // where a newline plus an ANSI escape is a forged log line.
+    const nasty = 'a.md\n\u001b[31m[memlawb mcp] ready'
+    const s = routeStub(req =>
+      new URL(req.url).search.includes('view=hashes')
+        ? json(200, { version: 1, entryChecksums: { [nasty]: 'deadbeef' }, supports: [] })
+        : json(200, { version: 1, content: { entries: { [nasty]: 'AAAAAAAAAAAAAAAAAAAA' } } }),
+    )
+    try {
+      const r = await preflight(envFor({ MEMLAWB_URL: s.url }))
+      expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('undecryptable')
+      const d = r.ready ? '' : r.diagnostic
+      // Positive control first: the key really is in there, so the two absence
+      // assertions below are over text that was actually interpolated.
+      expect(d).toContain('a.md')
+      expect(d).not.toContain('\n')
+      expect(d).not.toContain('\u001b')
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('a malformed read body is refused as a read failure, never as a wrong passphrase', async () => {
+    // A truncated body, a socket dropped mid-transfer and a wrong key all
+    // arrived here as one bare Error, so all three told the operator to change
+    // MEMLAWB_PASSPHRASE. Following that advice after a transient failure is
+    // exactly how the mixed-key namespace this file prevents gets created.
+    // `content` missing makes `pull` throw a TypeError, which is not a
+    // MemlawbDecryptError and must not be reported as one.
+    const s = routeStub(req =>
+      new URL(req.url).search.includes('view=hashes')
+        ? json(200, { version: 1, entryChecksums: { 'note.md': 'deadbeef' }, supports: [] })
+        : json(200, { version: 1 }),
+    )
+    try {
+      const r = await preflight(envFor({ MEMLAWB_URL: s.url }))
+      expect(r.ready).toBe(false)
+      expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('read-failed')
+      // The specific harm, spelled out: this diagnostic must not send the
+      // operator to their passphrase.
+      expect(r.ready ? '' : r.diagnostic).not.toContain('cannot decrypt')
+    } finally {
+      s.stop()
+    }
+  })
 })
 
+/**
+ * Launch the real CLI and read stderr until the ready line appears. Returns the
+ * live child, so the caller can assert on stdout and then kill it.
+ */
+async function launchUntilReady(env: Record<string, string>, timeoutMs = 20000) {
+  const run = Bun.spawn(['bun', 'run', 'bin/memlawb.ts', 'mcp'], {
+    cwd: new URL('..', import.meta.url).pathname,
+    env: { ...process.env, ...env },
+    // Kept open on purpose: this is the MCP protocol channel, and a closed
+    // stdin would end the transport the test is trying to watch come up.
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const reader = run.stderr.getReader()
+  const dec = new TextDecoder()
+  let err = ''
+  const untilReady = (async () => {
+    while (!err.includes('[memlawb mcp] ready')) {
+      const { value, done } = await reader.read()
+      if (done) return
+      err += dec.decode(value, { stream: true })
+    }
+  })()
+  await Promise.race([
+    untilReady,
+    Bun.sleep(timeoutMs).then(() => {
+      run.kill()
+      throw new Error(`no ready line in ${timeoutMs}ms; stderr so far: ${err}`)
+    }),
+  ])
+  return { run, err }
+}
+
 describe('mcp stdio launch', () => {
+  test('a valid configuration reaches ready with nothing on stdout', async () => {
+    // The success half of this file. Every other case here stops inside
+    // preflight, so tool registration and the transport connect were never
+    // executed by any test at all.
+    const canary = Bun.spawn(['bun', '-e', 'console.log("canary")'], { stdout: 'pipe' })
+    expect(await new Response(canary.stdout).text()).toContain('canary')
+
+    const { run, err } = await launchUntilReady({
+      MEMLAWB_URL: url,
+      MEMLAWB_NAMESPACE: 'user:pf-launch',
+      MEMLAWB_PASSPHRASE: PASSPHRASE,
+    })
+    expect(err).toContain('[memlawb mcp] ready')
+    // Against the current server there is nothing to warn about, so the
+    // warning line must be absent here as well as present in the test below.
+    expect(err).not.toContain('write precondition')
+    run.kill()
+    // Read after the kill: the stream ends, and everything the child ever wrote
+    // to stdout up to and past the transport connect is in it.
+    expect(await new Response(run.stdout).text()).toBe('')
+    await run.exited
+  }, 30000)
+
+  test('a startup warning reaches stderr, and does not stop the server coming up', async () => {
+    const s = routeStub(() => json(200, { version: 0, entryChecksums: {}, supports: [] }))
+    try {
+      const { run, err } = await launchUntilReady({
+        MEMLAWB_URL: s.url,
+        MEMLAWB_NAMESPACE: 'user:pf-launch-old',
+        MEMLAWB_PASSPHRASE: PASSPHRASE,
+      })
+      expect(err).toContain('does not enforce the write precondition')
+      expect(err).toContain('[memlawb mcp] ready')
+      run.kill()
+      expect(await new Response(run.stdout).text()).toBe('')
+      await run.exited
+    } finally {
+      s.stop()
+    }
+  }, 30000)
+
   test('a wrong passphrase exits non-zero with nothing on stdout', async () => {
     const ns = 'user:pf-stdio'
     await new MemlawbClient({ url, passphrase: PASSPHRASE }).push(ns, { 'x.md': 'body' })

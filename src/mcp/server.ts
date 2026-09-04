@@ -39,7 +39,11 @@ export async function main(): Promise<void> {
     process.stderr.write(`memlawb mcp: ${config.diagnostic}\n`)
     process.exit(1)
   }
-  const { client, url, namespace: defaultNamespace } = config
+  const { client, url, namespace: defaultNamespace, warnings } = config
+  // Non-fatal findings from the preflight. Written before the tools are bound
+  // so they are the first thing in the launcher's log, and to stderr because
+  // stdout belongs to the protocol.
+  for (const w of warnings) process.stderr.write(`memlawb mcp: ${w}\n`)
   const tools = makeTools(client, defaultNamespace)
 
   const server = new McpServer(
