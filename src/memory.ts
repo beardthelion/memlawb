@@ -22,6 +22,7 @@ import { validateEntryKey } from './namespace.ts'
 import { QuotaError, reserveAndCommit } from './quota.ts'
 import { blobPrefix, contentPath, entryPath, getStore, manifestPath } from './store/index.ts'
 import {
+  type EntryRead,
   emptyManifest,
   type Manifest,
   type MemoryData,
@@ -113,6 +114,55 @@ export async function getData(namespace: string, nsSlug: string): Promise<Memory
     checksum: namespaceChecksum(entryChecksums),
     erasure: store.erasure,
     content: { entries, entryChecksums },
+  }
+}
+
+/**
+ * Bounded view: one entry's ciphertext, selected by key.
+ *
+ * Deliberately NOT getData filtered after the fact — the point is that the
+ * store is asked for one blob, so a caller proving it can decrypt what is
+ * stored pays for one entry instead of the namespace's whole 10 MB cap.
+ *
+ * Drift is answered, not swallowed. getData skips an entry whose body is gone
+ * because one bad blob must not take a namespace-wide read down with it, and
+ * the caller still gets every other entry. Here there is no other entry: the
+ * same skip would return "this namespace has no such key", which is false and
+ * indistinguishable from a key that was never written. So a named-but-missing
+ * body is its own refusal (`unreadable`) and an operator can see it.
+ */
+export async function getEntry(namespace: string, nsSlug: string, key: string): Promise<EntryRead> {
+  const m = await readManifest(nsSlug)
+  const meta = m.entries[key]
+  if (!meta) {
+    // The same test the full read uses to answer `empty`, so the two reads
+    // agree on what "this namespace does not exist yet" means.
+    if (m.version === 0 && Object.keys(m.entries).length === 0) return { status: 'no_namespace' }
+    return { status: 'no_entry' }
+  }
+
+  const store = getStore()
+  let bytes: Uint8Array | null = null
+  try {
+    bytes = (await store.get(contentPath(nsSlug, meta.hash))) ?? null
+  } catch {
+    // A hash that is not a digest cannot name a blob; fall through to the
+    // pre-content-addressing path below rather than failing the read here.
+  }
+  bytes ??= await store.get(entryPath(nsSlug, sha256Hex(key)))
+  if (!bytes) return { status: 'unreadable' }
+
+  return {
+    status: 'ok',
+    entry: {
+      namespace,
+      version: m.version,
+      lastModified: m.lastModified,
+      erasure: store.erasure,
+      key,
+      entry: Buffer.from(bytes).toString('base64'),
+      entryChecksum: meta.hash,
+    },
   }
 }
 
