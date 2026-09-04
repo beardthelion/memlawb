@@ -26,6 +26,17 @@ export class StubClient implements MemoryClient {
   entries: Record<string, string> = {}
   /** Thrown by the next call to any method. Set it to render a denial. */
   error: unknown = null
+  /**
+   * Keys the pretend server refuses, key -> reason. A real 2xx push can store
+   * nothing and list the key here, so a stub that always reports every key as
+   * uploaded cannot express the case the tools have to render.
+   *
+   * Every configured key is reported in `skipped`, whether or not this push
+   * sent it: the server also lists refused deletion keys, which never appear in
+   * `entries`, so a caller must match on the key it sent rather than on
+   * `skipped` being non-empty.
+   */
+  refuse: Record<string, string> = {}
   version = 1
 
   private raise() {
@@ -38,16 +49,21 @@ export class StubClient implements MemoryClient {
     opts?: { deletions?: string[] },
   ): Promise<PushResult> {
     this.raise()
-    const uploaded = Object.keys(entries)
-    for (const [k, v] of Object.entries(entries)) this.entries[k] = v
-    for (const k of opts?.deletions ?? []) delete this.entries[k]
-    this.version += 1
+    const uploaded = Object.keys(entries).filter(k => !(k in this.refuse))
+    const skipped = Object.entries(this.refuse).map(([key, reason]) => ({ key, reason }))
+    // A refused key is stored nowhere, which is the half of the contract that
+    // makes reporting it as saved a lie.
+    for (const k of uploaded) this.entries[k] = entries[k] as string
+    const deleted = opts?.deletions ?? []
+    for (const k of deleted) delete this.entries[k]
+    if (uploaded.length || deleted.length) this.version += 1
     return {
       namespace: _namespace,
       version: this.version,
       uploaded,
       unchanged: [],
-      deleted: opts?.deletions ?? [],
+      deleted,
+      skipped,
     }
   }
 

@@ -152,9 +152,14 @@ describe('denial rendering', () => {
     '413 quota',
     '429 rate limited',
   ] as const
+  // The sixth rule is not an HTTP status: a 2xx push that stored nothing. It
+  // gets its own marker so a text that fell through to it (or out of it) is
+  // red in both directions.
+  const SKIPPED_MARKER = 'refused by the server'
   const only = (text: string, marker: (typeof MARKERS)[number]) => {
     expect(text).toContain(marker)
     for (const other of MARKERS) if (other !== marker) expect(text).not.toContain(other)
+    expect(text).not.toContain(SKIPPED_MARKER)
   }
   const toolsWith = (error: unknown, ns = 'user:alice') => {
     const stub = new StubClient()
@@ -167,6 +172,11 @@ describe('denial rendering', () => {
     expect(r.isError).toBe(true)
     only(r.text, '401 unauthorized')
     expect(r.text).toMatch(/API key/i)
+    // The model cannot edit the server's environment or restart the process,
+    // so telling it to do that leaves it with no move at all. Like the 429
+    // text, this one has to hand the problem to the user.
+    expect(r.text).toMatch(/tell the user/i)
+    expect(r.text).not.toMatch(/start it again|restart/i)
   })
 
   test('403 names the authorized prefix and nothing belonging to another owner', async () => {
@@ -219,14 +229,14 @@ describe('denial rendering', () => {
 
   test('the authorized prefix is the owner root, not the configured namespace', async () => {
     // The guide and the setup card both tell a developer to run one namespace
-    // per codebase, so the configured default is routinely a child like
-    // user:alice/repo/x. Naming that as the prefix the key may reach is false
-    // (the key reaches all of user:alice) and sends the model to retarget
-    // inside a subtree narrower than the one it actually has.
-    const tools = toolsWith(httpError(403, 'forbidden'), 'user:alice/repo/memlawb')
+    // per codebase, which is user:<owner>/<repo>, so the configured default is
+    // routinely a child like user:alice/memlawb. Naming that as the prefix the
+    // key may reach is false (the key reaches all of user:alice) and sends the
+    // model to retarget inside a subtree narrower than the one it actually has.
+    const tools = toolsWith(httpError(403, 'forbidden'), 'user:alice/memlawb')
     const r = await tools.save('k.md', 'body', 'user:bob/private')
     expect(r.text).toContain('user:alice')
-    expect(r.text).not.toContain('user:alice/repo')
+    expect(r.text).not.toContain('user:alice/memlawb')
     expect(r.text).not.toContain('user:bob')
   })
 
@@ -325,5 +335,132 @@ describe('denial rendering', () => {
     const r = await makeTools(new StubClient(), 'user:alice').save('k.md', 'body')
     expect(r.isError).toBeUndefined()
     for (const m of MARKERS) expect(r.text).not.toContain(m)
+  })
+
+  test('a 403 against a namespace no key can reach does not promise a subtree', async () => {
+    // authorizeNamespace grants a non-local owner user:<owner> and its children
+    // and nothing else, so when the configured namespace is agent:/repo:-scoped
+    // there is no reachable subtree to retarget into. Saying otherwise sends
+    // the model to retry somewhere it can never get to.
+    const r = await toolsWith(httpError(403, 'forbidden'), 'agent:intern').save('k.md', 'body')
+    expect(r.isError).toBe(true)
+    only(r.text, '403 forbidden')
+    expect(r.text).toContain('agent:intern')
+    expect(r.text).not.toMatch(/may only reach agent:intern/)
+    expect(r.text).not.toMatch(/Retarget/)
+    expect(r.text).toMatch(/tell the user/i)
+    expect(r.text).toContain('user:')
+  })
+
+  test('recall renders the typed denial rather than the raw response body', async () => {
+    const r = await toolsWith(httpError(403, 'forbidden')).recall('anything', 'user:bob/private')
+    expect(r.isError).toBe(true)
+    only(r.text, '403 forbidden')
+    expect(r.text).toContain('user:alice')
+    expect(r.text).not.toContain('user:bob')
+    expect(r.text).not.toContain('{"error"')
+    // The save wording is wrong on a read: nothing was being stored.
+    expect(r.text).not.toContain('Nothing was stored')
+  })
+
+  test('search renders the typed denial rather than the raw response body', async () => {
+    const r = await toolsWith(httpError(429, 'rate_limited')).search('anything')
+    expect(r.isError).toBe(true)
+    only(r.text, '429 rate limited')
+    expect(r.text).toMatch(/do not retry/i)
+    expect(r.text).not.toContain('{"error"')
+    expect(r.text).not.toContain('Nothing was stored')
+  })
+
+  test('list renders the typed denial rather than the raw response body', async () => {
+    const r = await toolsWith(httpError(401, 'unauthorized')).list()
+    expect(r.isError).toBe(true)
+    only(r.text, '401 unauthorized')
+    expect(r.text).toMatch(/tell the user/i)
+    expect(r.text).not.toContain('{"error"')
+    expect(r.text).not.toContain('Nothing was stored')
+  })
+
+  test('a read failure that is not a typed refusal still falls through', async () => {
+    const r = await toolsWith(new Error('socket hang up')).recall('anything')
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain('socket hang up')
+    for (const m of MARKERS) expect(r.text).not.toContain(m)
+  })
+})
+
+/**
+ * A 2xx push that stored nothing. The server answers 200 and lists the refused
+ * key in `skipped`, so a tool that reads only `uploaded` reports a denial as
+ * "saved" or "unchanged" and the model believes its memory landed.
+ */
+describe('a refused entry inside a successful push', () => {
+  const withRefusal = (key: string, reason: string) => {
+    const stub = new StubClient()
+    stub.refuse[key] = reason
+    return { stub, tools: makeTools(stub, 'user:alice') }
+  }
+
+  test('an oversized entry is a failure naming the size move, not a save', async () => {
+    const { stub, tools } = withRefusal('big.md', 'entry_too_large')
+    const r = await tools.save('big.md', 'body')
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain('big.md')
+    expect(r.text).toContain('entry_too_large')
+    expect(r.text).toContain('refused by the server')
+    expect(r.text).toMatch(/split|less content/i)
+    // Neither the loud lie nor the quiet one.
+    expect(r.text).not.toMatch(/\bsaved\b/)
+    expect(r.text).not.toMatch(/\bunchanged\b/)
+    // And the claim matches the store: nothing landed.
+    expect(stub.entries['big.md']).toBeUndefined()
+  })
+
+  test('an invalid key is a failure naming a different key as the move', async () => {
+    const { tools } = withRefusal('../escape.md', 'invalid_key')
+    const r = await tools.save('../escape.md', 'body')
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain('invalid_key')
+    expect(r.text).toMatch(/entry key/i)
+    // The oversize move is the wrong advice here: shortening a bad path does
+    // not make it valid.
+    expect(r.text).not.toMatch(/split/i)
+    expect(r.text).not.toMatch(/\bsaved\b/)
+  })
+
+  test("a push that refused a different key does not swallow this key's save", async () => {
+    // Negative control for the lookup: the tool must match the key it sent,
+    // not merely notice that `skipped` is non-empty.
+    const { stub, tools } = withRefusal('other.md', 'entry_too_large')
+    const r = await tools.save('mine.md', 'body')
+    expect(r.isError).toBeUndefined()
+    expect(r.text).toContain('saved')
+    expect(r.text).not.toContain('refused by the server')
+    expect(stub.entries['mine.md']).toBe('body')
+  })
+
+  test('a plain save is still reported as saved', async () => {
+    const { tools } = withRefusal('other.md', 'entry_too_large')
+    const r = await tools.save('fine.md', 'body')
+    expect(r.text).toContain('saved "fine.md" in user:alice')
+  })
+
+  test('the real server refusing an oversized entry is not reported as saved', async () => {
+    // The double is mine; this one is the shipped contract. MAX_ENTRY_BYTES
+    // defaults to 250_000, and the per-entry check runs before any namespace
+    // byte cap, so an oversized entry comes back skipped inside a 200.
+    const client = new MemlawbClient({
+      url: `http://localhost:${server.port}`,
+      passphrase: 'mcp-pass',
+    })
+    const real = makeTools(client, 'user:me/skipped')
+    const r = await real.save('big.md', 'x'.repeat(300_000))
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain('big.md')
+    expect(r.text).toContain('entry_too_large')
+    expect(r.text).not.toMatch(/\bsaved\b/)
+    expect(r.text).not.toMatch(/\bunchanged\b/)
+    // And the server really is empty, so the refusal is not a mislabelled write.
+    expect((await real.list()).text).not.toContain('big.md')
   })
 })

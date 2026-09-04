@@ -43,13 +43,18 @@ const fail = (text: string): ToolResult => ({ text, isError: true })
  * `authorizeNamespace` grants an owner `user:<owner>` and its children, so the
  * prefix is the owner root, never the configured namespace itself. The guide
  * and the setup card both ask a developer to run one namespace per codebase,
- * which makes a configured `user:alice/repo/x` the normal case; naming that as
+ * which makes a configured `user:alice/memlawb` the normal case; naming that as
  * the limit would be false and would send the model to retarget inside a
- * subtree narrower than the one it has. A namespace that is not `user:`-scoped
- * is not grantable at all, so it is reported unchanged.
+ * subtree narrower than the one it has.
+ *
+ * A namespace that is not `user:`-scoped has no owner root at all: a non-local
+ * key is granted `user:<owner>` and nothing else, and `hasAclGrant` is a closed
+ * door, so no `repo:`/`agent:` namespace is reachable. Returning the namespace
+ * unchanged there would promise a subtree the server can never grant, so this
+ * returns null and the caller says so instead.
  */
-function ownerRoot(namespace: string): string {
-  if (!namespace.startsWith('user:')) return namespace
+function ownerRoot(namespace: string): string | null {
+  if (!namespace.startsWith('user:')) return null
   const slash = namespace.indexOf('/')
   return slash === -1 ? namespace : namespace.slice(0, slash)
 }
@@ -66,7 +71,8 @@ function ownerRoot(namespace: string): string {
  * denial is the one moment the caller is provably reaching outside its own
  * subtree, so repeating the target would feed another owner's namespace back
  * into the model's context; it names the prefix this deployment is authorized
- * for instead.
+ * for instead, or, when this deployment is configured for a namespace no key
+ * can be granted at all, says that and hands the problem to the user.
  *
  * Returns null when the error is not a typed HTTP refusal, so the caller keeps
  * its generic message rather than dressing up an unknown failure.
@@ -81,9 +87,15 @@ function denial(
   if (!(e instanceof MemlawbHttpError)) return null
   const authorized = ownerRoot(configured)
   if (e.status === 401) {
-    return `${action} refused: the server did not accept this API key (401 unauthorized). Set a working memlawb API key in the MCP server configuration and start it again; retrying with the same key cannot succeed. ${tail}`
+    // The model cannot edit the server's environment or restart the process,
+    // so an instruction to do that is not a move it has. Like the 429 text,
+    // this one hands the problem to the user and stops the loop.
+    return `${action} refused: the server did not accept this API key (401 unauthorized). Retrying with the same key cannot succeed and no other namespace will help, so stop using the memory tools this session and tell the user the memlawb API key is being rejected and needs replacing. ${tail}`
   }
   if (e.status === 403) {
+    if (authorized === null) {
+      return `${action} refused: this key can reach only its own user: namespace, and ${configured} is not one, so nothing under it is reachable either (403 forbidden). No retry and no other key here can succeed, so tell the user this memlawb server is configured for ${configured} and has to point at a namespace under the key owner's own user: subtree instead. ${tail}`
+    }
     return `${action} refused: this key may only reach ${authorized} and namespaces under it (403 forbidden). Retarget the tool at a namespace under ${authorized}. ${tail}`
   }
   if (e.status === 409) {
@@ -128,6 +140,28 @@ function conflictLines(details: Record<string, unknown> | undefined): string {
   return `Changed since this session read it: ${parts.join(', ')}.`
 }
 
+/**
+ * A key the server refused inside an otherwise-successful push.
+ *
+ * The server answers 200 for a write it stored nothing of, listing the refused
+ * keys in `skipped` (`src/memory.ts`). Reading only `uploaded` therefore renders
+ * the denial as "saved", or as "unchanged" once the client filters the key out,
+ * and either way the model is told its memory is safe when nothing was written.
+ * Each reason gets the move that actually clears it.
+ */
+function skippedText(key: string, namespace: string, reason: string): string {
+  const head = `Saving "${key}" to ${namespace} was refused by the server (${reason}), and nothing was stored.`
+  if (reason === 'entry_too_large') {
+    return `${head} Save less content under this key, or split it across several smaller entries and save those.`
+  }
+  if (reason === 'invalid_key') {
+    return `${head} Save it under a different entry key: a plain relative path such as notes/topic.md, with no "..", no leading or trailing "/", and no backslash.`
+  }
+  // invalid_base64 means this client sent something the server could not read,
+  // which no choice of key or content on the model's side fixes.
+  return `${head} Retrying the same request cannot succeed, so tell the user memory writes to ${namespace} are failing.`
+}
+
 function snippet(content: string, max = 200): string {
   const oneLine = content.replace(/\s+/g, ' ').trim()
   return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine
@@ -144,6 +178,11 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
       const ns = nsOf(namespace)
       try {
         const r = await client.push(ns, { [key]: content })
+        // A 2xx does not mean this key landed: the server refuses oversized and
+        // malformed entries per key and reports them here. Match on the key
+        // that was sent, since another key's refusal says nothing about this one.
+        const refused = r.skipped?.find(s => s.key === key)
+        if (refused) return fail(skippedText(key, ns, refused.reason))
         const status = r.uploaded.length ? 'saved' : 'unchanged'
         return ok(`${status} "${key}" in ${ns} (v${r.version})`)
       } catch (e) {
@@ -170,7 +209,8 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
           `${ranked.length} relevant memor${ranked.length === 1 ? 'y' : 'ies'} from ${ns}:\n\n${body}`,
         )
       } catch (e) {
-        return fail(`recall failed: ${(e as Error).message}`)
+        const d = denial('Recalling memories', ns, defaultNamespace, 'No memories were read.', e)
+        return fail(d ?? `recall failed: ${(e as Error).message}`)
       }
     },
 
@@ -188,7 +228,8 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
         const body = hits.map(([key, content]) => `- ${key}: ${snippet(content)}`).join('\n')
         return ok(`${hits.length} match(es) for "${query}" in ${ns}:\n${body}`)
       } catch (e) {
-        return fail(`search failed: ${(e as Error).message}`)
+        const d = denial('Searching memories', ns, defaultNamespace, 'No memories were read.', e)
+        return fail(d ?? `search failed: ${(e as Error).message}`)
       }
     },
 
@@ -203,7 +244,8 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
           `${keys.length} entr${keys.length === 1 ? 'y' : 'ies'} in ${ns}:\n${keys.map(k => `- ${k}`).join('\n')}`,
         )
       } catch (e) {
-        return fail(`list failed: ${(e as Error).message}`)
+        const d = denial('Listing entries', ns, defaultNamespace, 'No entry keys were read.', e)
+        return fail(d ?? `list failed: ${(e as Error).message}`)
       }
     },
 
