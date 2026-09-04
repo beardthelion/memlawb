@@ -1,7 +1,7 @@
 {
   "name": "@gitlawb/memlawb",
   "version": "0.1.0",
-  "description": "Open-source, self-hostable, zero-knowledge agent memory — server, client, CLI, and MCP in one package",
+  "description": "Open-source, self-hostable, zero-knowledge agent memory \u2014 server, client, CLI, and MCP in one package",
   "type": "module",
   "license": "MIT",
   "author": "Gitlawb",
@@ -26,15 +26,17 @@
     "claude"
   ],
   "engines": {
-    "bun": ">=1.2.0"
+    "bun": ">=1.2.0",
+    "node": ">=20.0.0"
   },
   "publishConfig": {
     "access": "public"
   },
   "bin": {
-    "memlawb": "bin/memlawb.ts"
+    "memlawb": "dist/memlawb.js"
   },
   "files": [
+    "dist",
     "bin",
     "client",
     "src",
@@ -46,6 +48,8 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
+    "build": "bun run scripts/build.ts",
+    "prepack": "bun run build",
     "test": "bun test",
     "type-check": "tsc --noEmit",
     "check": "biome check",
@@ -54,9 +58,21 @@
     "lint": "biome lint"
   },
   "exports": {
-    ".": "./client/index.ts",
-    "./crypto": "./client/crypto.ts",
-    "./secretscan": "./client/secretscan.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./client/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./crypto": {
+      "types": "./dist/crypto.d.ts",
+      "bun": "./client/crypto.ts",
+      "default": "./dist/crypto.js"
+    },
+    "./secretscan": {
+      "types": "./dist/secretscan.d.ts",
+      "bun": "./client/secretscan.ts",
+      "default": "./dist/secretscan.js"
+    }
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",
@@ -64,6 +80,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
   }
 }

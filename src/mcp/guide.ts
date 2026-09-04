@@ -42,6 +42,18 @@ You have durable, end-to-end-encrypted memory via the memlawb MCP tools.
 Tools: memory_save(key, content) · memory_recall(query, limit?) ·
 memory_search(query) · memory_list() · memory_delete(key).`
 
+/**
+ * Build-time slot for SKILL.md's body. `scripts/build.ts` rewrites this exact
+ * literal while bundling the CLI, and fails the build if it cannot find it.
+ *
+ * The read below walks two directories up from this module, which is correct
+ * for src/mcp/ in the repo and wrong for the bundle in dist/. Without the slot
+ * the built MCP server would quietly serve FALLBACK instead of the real guide,
+ * and no test that only reads source would notice. Empty from source, where
+ * the repo layout is intact and the read is the real path.
+ */
+const INLINED_GUIDE = ''
+
 function stripFrontmatter(md: string): string {
   const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(md)
   return m ? md.slice(m[0].length).trimStart() : md
@@ -49,6 +61,7 @@ function stripFrontmatter(md: string): string {
 
 /** The full memory-usage guide (SKILL.md body, or the inline fallback). */
 export function loadMemoryGuide(): string {
+  if (INLINED_GUIDE.length > 0) return INLINED_GUIDE
   try {
     const here = dirname(fileURLToPath(import.meta.url)) // src/mcp
     const skillPath = join(here, '..', '..', 'skills', 'memlawb-memory', 'SKILL.md')
