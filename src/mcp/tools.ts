@@ -35,17 +35,30 @@ export type MemoryClient = {
 const byKey = ([a]: [string, unknown], [b]: [string, unknown]) => (a < b ? -1 : 1)
 
 /**
- * What an unrecognized failure is allowed to put into a model's context.
+ * What text the SERVER chose is allowed to put into a model's context.
  *
- * The fallback renders the error's message, and an HTTP error's message embeds
- * the response body, so a broken or hostile server could otherwise write
- * unbounded text straight into the conversation.
+ * Everything a refusal renders (the message, the error code, and the entry keys
+ * and hashes a 409 names) is read off a response body, so a broken or hostile
+ * server writes straight into the conversation unless it passes through here.
+ * Newlines and escapes are the sharp part: they let that text forge turns or
+ * instructions rather than merely be long.
+ *
+ * Bounding only the unrecognized-failure path, which was the first version of
+ * this, left the typed paths carrying it. Those are the ones a server can
+ * actually steer, since it chooses the status that selects them.
  */
 function bounded(message: string, max = 300): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point.
   const clean = message.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max)}...` : clean
 }
+
+/**
+ * How many keys a refusal may name. A server choosing to answer with thousands
+ * of conflicts would otherwise fill a model's context with a single tool
+ * result, each entry short and the total unbounded.
+ */
+const MAX_LISTED = 5
 
 const ok = (text: string): ToolResult => ({ text })
 const fail = (text: string): ToolResult => ({ text, isError: true })
@@ -118,7 +131,7 @@ function denial(
     return `${action} refused: the server is rate limiting this key (429 rate limited). Do not retry now and do not retry in a loop; wait for the limit to reset, and tell the user memory writes are paused. ${tail}`
   }
   if (e.status === 413) {
-    return `${action} refused: this write would exceed a storage limit on ${namespace} (413 quota: ${e.code}). Delete or shorten stored entries before saving again, or save less content. ${tail}`
+    return `${action} refused: this write would exceed a storage limit on ${namespace} (413 quota: ${bounded(e.code, 40)}). Delete or shorten stored entries before saving again, or save less content. ${tail}`
   }
   return null
 }
@@ -132,11 +145,15 @@ function denial(
 function sentBaseLine(details: Record<string, unknown> | undefined): string {
   const raw = details?.sentBase
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return ''
-  const parts = Object.entries(raw as Record<string, unknown>)
+  const all = Object.entries(raw as Record<string, unknown>)
     .filter(([, v]) => typeof v === 'string')
     .sort(byKey)
-    .map(([k, v]) => `"${k}" at ${v as string}`)
-  return parts.length === 0 ? '' : ` This write was computed against ${parts.join(', ')}.`
+  const parts = all
+    .slice(0, MAX_LISTED)
+    .map(([k, v]) => `"${bounded(k, 120)}" at ${bounded(v as string, 80)}`)
+  if (parts.length === 0) return ''
+  const more = all.length > parts.length ? ` and ${all.length - parts.length} more` : ''
+  return ` This write was computed against ${parts.join(', ')}${more}.`
 }
 
 /** What the server says each conflicting key holds now, or that it said nothing. */
@@ -147,10 +164,15 @@ function conflictLines(details: Record<string, unknown> | undefined): string {
   }
   const entries = Object.entries(raw as Record<string, unknown>)
   if (entries.length === 0) return 'The server did not name the conflicting keys.'
-  const parts = entries
-    .sort(byKey)
-    .map(([k, v]) => `"${k}" now holds ${typeof v === 'string' ? v : 'no entry'}`)
-  return `Changed since this session read it: ${parts.join(', ')}.`
+  const sorted = entries.sort(byKey)
+  const parts = sorted
+    .slice(0, MAX_LISTED)
+    .map(
+      ([k, v]) =>
+        `"${bounded(k, 120)}" now holds ${typeof v === 'string' ? bounded(v, 80) : 'no entry'}`,
+    )
+  const more = sorted.length > parts.length ? ` and ${sorted.length - parts.length} more` : ''
+  return `Changed since this session read it: ${parts.join(', ')}${more}.`
 }
 
 /**
