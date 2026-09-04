@@ -28,7 +28,12 @@
  * diagnostic to stderr.
  */
 
-import { MemlawbClient, MemlawbDecryptError, MemlawbHttpError } from '../../client/index.ts'
+import {
+  MemlawbClient,
+  MemlawbDecryptError,
+  MemlawbHttpError,
+  MemlawbTimeoutError,
+} from '../../client/index.ts'
 import type { ScanMode } from '../../client/secretscan.ts'
 
 export type PreflightResult =
@@ -46,21 +51,89 @@ function read(env: Env, name: string): string | undefined {
 }
 
 /**
- * Any `${...}` in a secret-bearing value, not just the exact literal
- * `${MEMLAWB_PASSPHRASE}`.
+ * An unexpanded variable reference, in either spelling a launcher can leave
+ * behind.
  *
  * openclaude substitutes an unset variable reference with its own literal text
  * and registers the server anyway, reporting only a warning, so memlawb
  * receives a non-empty passphrase that is really a template. Matching only the
  * one canonical spelling would miss every config that named the variable
- * something else, and the false-positive risk is close to nil: a passphrase or
- * service key containing `${` is not something `memlawb setup` can produce, and
- * an operator who genuinely wants one can still paste it with the braces
- * separated. This is the only thing standing between the openclaude
+ * something else. This is the only thing standing between the openclaude
  * integration and a mixed-key namespace, and that integration cannot delegate
  * the refusal upstream.
+ *
+ * The two rules are deliberately not symmetric, because the two spellings
+ * carry different false-positive risk and a false positive here is not cheap:
+ * a service key can be reissued, but a refused passphrase is the one thing
+ * nobody can reissue, and the memory it opens is unreadable without it.
+ *
+ * BRACED matches anywhere in the value. `${` is not something `memlawb setup`
+ * can generate, it is not a shape a password manager emits, and an operator who
+ * genuinely wants those two characters can still choose a passphrase that
+ * separates them.
+ *
+ * BARE is anchored to the WHOLE value and to an all-caps identifier, so it
+ * means "this value is a variable reference" rather than "this value contains a
+ * dollar sign". A single `$` is perfectly ordinary inside a high-entropy
+ * secret, including as its first character, so anything looser would lock a
+ * user out of their own memory. Refused: `$MEMLAWB_PASSPHRASE`, `$HOME`,
+ * `$API_KEY_2`. Accepted: `$Xk9!vQ2m`, `pa$$word`, `$MEMLAWB_PASSPHRASE more`,
+ * a lone `$`, `$4DOLLARS` (an identifier cannot start with a digit).
+ *
+ * What BARE knowingly does not catch, since an undocumented limit reads as
+ * coverage: a lowercase or mixed-case bare reference such as `$secret` or
+ * `$MyPass`. Shell and POSIX convention reserves upper case for environment
+ * variables and launcher configs follow it, while `$secret` is a far more
+ * plausible passphrase than an env var name, so the caps requirement is where
+ * the two error costs cross over. `$` followed by a positional parameter or a
+ * substitution such as `$(cmd)` is not caught either, and neither is a
+ * partially expanded value.
+ *
+ * The residual false positive, a passphrase that really is `$` plus all caps
+ * and nothing else, is recoverable: preflight gates only `memlawb mcp`, so the
+ * CLI can still pull that namespace and push it again under a new passphrase.
  */
-const UNEXPANDED = /\$\{[^}]*\}/
+/**
+ * How many entries the passphrase proof may read before giving up.
+ *
+ * One would let a single drifted entry condemn a namespace whose others are
+ * fine; unbounded would put the whole namespace back on the startup path, which
+ * is what this proof exists to avoid. Five keeps the worst case at five small
+ * reads, and a namespace whose first five entries are all unreadable is broken
+ * enough that refusing to start is the honest answer.
+ */
+const PROBE_LIMIT = 5
+
+const UNEXPANDED_BRACED = /\$\{[^}]*\}/
+const UNEXPANDED_BARE = /^\$[A-Z_][A-Z0-9_]*$/
+
+function isUnexpanded(value: string): boolean {
+  return UNEXPANDED_BRACED.test(value) || UNEXPANDED_BARE.test(value)
+}
+
+/**
+ * What starting on template text would cost, per variable, said in the
+ * refusal. The namespace is not secret-bearing and nothing is corrupted by an
+ * unexpanded one, but it is checked here anyway: without it the operator gets a
+ * 400 from the startup read, which reads as a server fault rather than a config
+ * one, and the round trip carries their own config text into someone else's
+ * logs first. It costs nothing in the other direction, because no legal
+ * namespace can trip either rule (namespace.ts NAMESPACE_RE has no `$` in it).
+ *
+ * MEMLAWB_URL is deliberately left out. Template text there fails as a
+ * transport error that quotes the URL it could not reach, which already names
+ * the defect, and a URL is the one value here that can legitimately carry a
+ * `$`.
+ */
+const MISEXPANSION_CHECKED = ['MEMLAWB_PASSPHRASE', 'MEMLAWB_API_KEY', 'MEMLAWB_NAMESPACE'] as const
+
+const MISEXPANSION_STAKE: Record<(typeof MISEXPANSION_CHECKED)[number], string> = {
+  MEMLAWB_PASSPHRASE: 'Starting like this would write memory under a key nobody can reproduce.',
+  MEMLAWB_API_KEY:
+    'Starting like this would send template text as the service key, which the server rejects.',
+  MEMLAWB_NAMESPACE:
+    'Starting like this would send that literal to the server as a namespace, and every read and write would fail against a name that does not exist.',
+}
 
 const SCAN_MODES: ScanMode[] = ['block', 'warn', 'off']
 
@@ -88,13 +161,13 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
   const passphrase = read(env, 'MEMLAWB_PASSPHRASE')
 
   // 1. Misexpansion, before anything is sent anywhere.
-  for (const name of ['MEMLAWB_PASSPHRASE', 'MEMLAWB_API_KEY'] as const) {
+  for (const name of MISEXPANSION_CHECKED) {
     const value = read(env, name)
-    if (value && UNEXPANDED.test(value)) {
+    if (value && isUnexpanded(value)) {
       return refuse(
         `${name} still holds an unexpanded variable reference, so this server was launched with template text instead of a value. ` +
           'Set the variable in the environment that launches the MCP server, or put the value itself in the config. ' +
-          'Starting like this would write memory under a key nobody can reproduce.',
+          MISEXPANSION_STAKE[name],
       )
     }
   }
@@ -121,11 +194,15 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
     )
   }
 
+  // A hung server would otherwise block startup for the client default, which
+  // is sized for a full 10 MB pull rather than for the small reads this makes.
+  const timeoutMs = Number(read(env, 'MEMLAWB_TIMEOUT_MS') ?? '') || undefined
   const client = new MemlawbClient({
     url,
     apiKey,
     passphrase,
     scanMode: scanMode as ScanMode,
+    ...(timeoutMs ? { timeoutMs } : {}),
   })
 
   // 4, 5, 6. One authenticated read of the pinned namespace separates a
@@ -138,6 +215,16 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
       `the memlawb server at ${url} refused the startup read of "${namespace}" with HTTP ${err.status} (${err.code}). ${err.message}`,
     )
 
+  // A server that accepted the connection and then said nothing is neither
+  // refusing nor absent. Reporting it as unreachable sends an operator to check
+  // DNS and firewalls for a server that answered them.
+  const refuseNoAnswer = (err: MemlawbTimeoutError) =>
+    refuse(
+      `the memlawb server at ${url} accepted the connection but did not answer the startup ${err.operation} for "${namespace}" within ${err.timeoutMs}ms. ` +
+        'The URL and the route are reachable, so this is the server or the link being slow or stuck rather than misconfiguration. ' +
+        'Check the server, and raise MEMLAWB_TIMEOUT_MS if the link is simply slow.',
+    )
+
   // Conditions that are worth telling the operator about but must not stop a
   // supported deployment from serving memory. The caller writes them to stderr.
   const warnings: string[] = []
@@ -146,6 +233,7 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
   try {
     checksums = await client.hashes(namespace)
   } catch (err) {
+    if (err instanceof MemlawbTimeoutError) return refuseNoAnswer(err)
     if (!(err instanceof MemlawbHttpError)) {
       return refuse(
         `cannot reach the memlawb server at ${url}: ${(err as Error).message}. ` +
@@ -176,61 +264,76 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
   // wrong passphrase is indistinguishable from a first-run one and starting is
   // the correct answer. Nothing is lost by it, because the first save is what
   // fixes the key for that namespace.
-  const listed = Object.keys(checksums)
+  const listed = Object.keys(checksums).sort()
   if (listed.length > 0) {
-    let decrypted: string[]
-    try {
-      decrypted = Object.keys((await client.pull(namespace)).entries)
-    } catch (err) {
-      if (err instanceof MemlawbHttpError) {
-        return refuseHttp(err)
-      }
-      // Only a decryption failure may be reported as one. Everything else that
-      // can break this read (a truncated body, a socket dropped mid-transfer, a
-      // response that is not the shape the client parses) used to land here and
-      // tell the operator their passphrase was wrong; acting on that advice
-      // after a transient failure is what creates the mixed-key namespace.
-      if (!(err instanceof MemlawbDecryptError)) {
+    // Reading one entry proves the passphrase, so the proof is a probe rather
+    // than a download. `pull` fetched every body to learn one thing, and a
+    // namespace caps at 10 MB, which every agent session paid before its first
+    // tool call.
+    //
+    // Which key: sorted order, stopping at the first that decrypts, and at most
+    // PROBE_LIMIT of them. Sorted because startup must not pass on one launch
+    // and fail on the next against the same server, which is what picking at
+    // random would do. More than one because a single drifted entry must not
+    // condemn a namespace whose other entries are fine. Capped because the cost
+    // has to stay bounded, and a namespace whose first several entries are all
+    // unreadable is broken enough to stop for.
+    //
+    // What this gives up against the old full read: drift AFTER the first
+    // readable entry is never looked at, so the warning below reports only what
+    // the probe walked past. That is the price of not downloading everything.
+    const unreadable: string[] = []
+    let proven = false
+    for (const key of listed.slice(0, PROBE_LIMIT)) {
+      try {
+        await client.entry(namespace, key)
+        proven = true
+        break
+      } catch (err) {
+        if (err instanceof MemlawbTimeoutError) return refuseNoAnswer(err)
+        if (err instanceof MemlawbDecryptError) {
+          // The one failure the passphrase is entitled to be blamed for.
+          return refuse(
+            `MEMLAWB_PASSPHRASE cannot decrypt the existing entries in namespace "${namespace}" (entry "${oneLine(err.entryKey)}": ${oneLine(err.reason)}). ` +
+              'Set the passphrase this namespace was created with. ' +
+              'Refusing to start, because saving under a second key would leave the namespace unreadable by the correct passphrase as well.',
+          )
+        }
+        if (err instanceof MemlawbHttpError) {
+          // The manifest names it and the store cannot produce it, or the
+          // server no longer has it at all. Neither says anything about the
+          // passphrase, so try the next key rather than concluding.
+          if (err.code === 'entry_unreadable' || err.code === 'entry_not_found') {
+            unreadable.push(key)
+            continue
+          }
+          return refuseHttp(err)
+        }
+        // Everything else that can break this read used to land on the
+        // passphrase diagnostic; acting on that advice after a transient
+        // failure is what creates the mixed-key namespace.
         return refuse(
-          `the startup read of namespace "${namespace}" from ${url} failed before anything could be decrypted: ${(err as Error).message}. ` +
+          `the startup read of namespace "${namespace}" from ${url} failed before anything could be decrypted: ${oneLine((err as Error).message)}. ` +
             'This is a transport or response failure, not a passphrase problem, so do not change MEMLAWB_PASSPHRASE on the strength of it. ' +
             'Retry, and check the server and the network between you and it.',
         )
       }
-      return refuse(
-        `MEMLAWB_PASSPHRASE cannot decrypt the existing entries in namespace "${namespace}" (entry "${oneLine(err.entryKey)}": ${oneLine(err.reason)}). ` +
-          'Set the passphrase this namespace was created with. ' +
-          'Refusing to start, because saving under a second key would leave the namespace unreadable by the correct passphrase as well.',
-      )
     }
 
-    // The proof has to be that a decrypt HAPPENED, not that nothing threw.
-    // The server drops any manifest key whose blob is missing from both the
-    // bodies and the checksums it returns (src/memory.ts, getData), so a fully
-    // drifted namespace answers the read with zero entries, no decrypt runs and
-    // no error is raised. Treating that as proof declared a wrong passphrase
-    // ready, which is this file's worst possible failure.
-    //
-    // A PARTIAL return is deliberately not refused: at least one entry was
-    // decrypted, so the passphrase is proven, and the drift is the server's
-    // problem, not the operator's key. Refusing there would take memory away
-    // for a condition the passphrase is innocent of, on a deployment where
-    // every remaining entry still works. It is reported as a startup warning
-    // instead (see `warnings` below).
-    if (decrypted.length < listed.length && decrypted.length > 0) {
-      warnings.push(
-        `the memlawb server at ${url} served ${decrypted.length} of the ${listed.length} entries listed in namespace "${namespace}". ` +
-          'The rest are named by the manifest but their stored bodies are gone, and they will be missing from memory until the namespace is restored.',
-      )
-    }
-
-    if (decrypted.length === 0) {
+    if (!proven) {
       return refuse(
-        `the memlawb server at ${url} lists ${listed.length} entr${listed.length === 1 ? 'y' : 'ies'} in namespace "${namespace}" but served none of them, ` +
+        `the memlawb server at ${url} lists ${listed.length} entr${listed.length === 1 ? 'y' : 'ies'} in namespace "${namespace}" but served none of the ${unreadable.length} it was asked for, ` +
           'so nothing was decrypted and the passphrase could not be checked. ' +
           'This is server-side drift, not a passphrase problem: the manifest names entries whose stored bodies are gone. ' +
           'Restore the namespace from a backup, or point MEMLAWB_NAMESPACE somewhere else. ' +
           'Refusing to start, because a save into this namespace could not be verified against anything.',
+      )
+    }
+
+    if (unreadable.length > 0) {
+      warnings.push(
+        `the memlawb server at ${url} could not serve ${unreadable.map(oneLine).join(', ')} in namespace "${namespace}", though the manifest names ${listed.length === 1 ? 'it' : 'them'}. ` +
+          'Those entries are missing from memory until the namespace is restored, and any others past the first readable one were not checked.',
       )
     }
   }

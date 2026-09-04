@@ -51,10 +51,11 @@ function markerOf(text: string): string {
     ['rejected-key', /rejected the service key/],
     ['unauthorized-namespace', /refused namespace/],
     ['undecryptable', /cannot decrypt the existing entries/],
-    ['unservable', /but served none of them/],
+    ['unservable', /but served none of the/],
     ['read-failed', /failed before anything could be decrypted/],
     ['invalid-scan-mode', /which is not a scan mode/],
     ['server-refused', /refused the startup read/],
+    ['no-answer', /accepted the connection but did not answer/],
   ]
   const hits = table.filter(([, re]) => re.test(text)).map(([name]) => name)
   return hits.length === 1 ? (hits[0] as string) : `other(${hits.join('+') || 'none'})`
@@ -209,6 +210,104 @@ describe('mcp startup preflight', () => {
     expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('misexpansion')
   })
 
+  test('a bare $VAR reference in the passphrase is refused as misexpansion', async () => {
+    // The braced form is what openclaude writes, but a config written by hand
+    // or by another launcher carries the bare form just as easily and the
+    // consequence is identical: template text saved as a passphrase, and a
+    // namespace left under a key nobody can reproduce. Built from a separate
+    // '$' rather than written literally, like the fixture above, so the file
+    // itself carries no shell-looking literal for a reader to misread.
+    const s = stub(200, { version: 1, entryChecksums: {} })
+    try {
+      const r = await preflight(
+        envFor({ MEMLAWB_URL: s.url, MEMLAWB_PASSPHRASE: `${'$'}MEMLAWB_PASSPHRASE` }),
+      )
+      expect(r.ready).toBe(false)
+      expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('misexpansion')
+      // Same standard as the braced form: refused before anything is sent, so
+      // the literal never reaches a server that would then hold entries under
+      // a key nobody has.
+      expect(s.hits).toEqual([])
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('a bare $VAR reference in the API key is refused as misexpansion', async () => {
+    const r = await preflight(envFor({ MEMLAWB_API_KEY: `${'$'}MEMLAWB_API_KEY` }))
+    expect(r.ready).toBe(false)
+    expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('misexpansion')
+  })
+
+  test('an unexpanded namespace is refused as misexpansion, in either spelling', async () => {
+    // Not secret-bearing, so nothing is corrupted by it, but the diagnostic it
+    // used to get came from the server: a 400 on the startup read, which reads
+    // as a server problem and costs a round trip that carries the operator's
+    // own config text to a third party's logs. There is no false-positive risk
+    // to weigh against that, because the namespace grammar
+    // (src/namespace.ts NAMESPACE_RE) has no `$` in it at all, so no legal
+    // namespace can trip either rule.
+    const outcomes: string[] = []
+    for (const ns of [`${'$'}MEMLAWB_NAMESPACE`, `${'$'}{MEMLAWB_NAMESPACE}`]) {
+      const s = stub(200, { version: 1, entryChecksums: {} })
+      try {
+        const r = await preflight(envFor({ MEMLAWB_URL: s.url, MEMLAWB_NAMESPACE: ns }))
+        outcomes.push(
+          `${ns} => ${r.ready ? 'ready' : markerOf(r.diagnostic)} hits:${s.hits.length}`,
+        )
+      } finally {
+        s.stop()
+      }
+    }
+    expect(outcomes).toEqual([
+      `${'$'}MEMLAWB_NAMESPACE => misexpansion hits:0`,
+      `${'$'}{MEMLAWB_NAMESPACE} => misexpansion hits:0`,
+    ])
+  })
+
+  test('a legitimate secret containing a dollar sign is still accepted', async () => {
+    // The load-bearing half of the bare-$VAR rule, and the reason it is
+    // anchored to the whole value and to an all-caps identifier. A rule that
+    // refused anything containing a `$`, or anything merely starting with one,
+    // would pass every positive test above while locking a user out of the
+    // memory only their passphrase can open. That is the more expensive of the
+    // two errors: a service key can be reissued, a passphrase cannot.
+    const D = '$'
+    const legit = [
+      `${D}Xk9!vQ2m-Zr4tW`, // password-manager output that happens to start with $
+      `${D}MEMLAWB_PASSPHRASE and more`, // the reference is not the whole value
+      `${D}secret`, // lowercase: not the all-caps shape a launcher config uses
+      `${D}MixedCaseName`,
+      `pa${D}${D}word`,
+      `correct${D}horse${D}battery`,
+      D,
+      `${D}4DOLLARS`, // an identifier cannot start with a digit
+      `${D} SPACED`,
+      `two ${D}WORDS`,
+    ]
+    const outcomes: string[] = []
+    for (const passphrase of legit) {
+      const r = await preflight(
+        envFor({ MEMLAWB_NAMESPACE: 'user:pf-dollar', MEMLAWB_PASSPHRASE: passphrase }),
+      )
+      outcomes.push(`${passphrase} => ${r.ready ? 'ready' : markerOf(r.diagnostic)}`)
+    }
+    expect(outcomes).toEqual(legit.map(p => `${p} => ready`))
+  })
+
+  test('a service key containing a dollar sign is still accepted', async () => {
+    const D = '$'
+    const legit = [`${D}Xk9!vQ2m-Zr4tW`, `${D}live-key`, `sk${D}${D}live`, `${D}4KEYS`]
+    const outcomes: string[] = []
+    for (const apiKey of legit) {
+      const r = await preflight(
+        envFor({ MEMLAWB_NAMESPACE: 'user:pf-dollar-key', MEMLAWB_API_KEY: apiKey }),
+      )
+      outcomes.push(`${apiKey} => ${r.ready ? 'ready' : markerOf(r.diagnostic)}`)
+    }
+    expect(outcomes).toEqual(legit.map(k => `${k} => ready`))
+  })
+
   test('a missing passphrase is refused as missing, not as misexpansion', async () => {
     const r = await preflight(envFor({ MEMLAWB_PASSPHRASE: '   ' }))
     expect(r.ready).toBe(false)
@@ -282,12 +381,150 @@ describe('mcp startup preflight', () => {
     const s = routeStub(req =>
       new URL(req.url).search.includes('view=hashes')
         ? json(200, { version: 3, entryChecksums: { 'note.md': 'deadbeef' }, supports: [] })
-        : json(200, { version: 3, content: { entries: {}, entryChecksums: {} } }),
+        : json(503, { error: { code: 'entry_unreadable', message: 'blob gone' } }),
     )
     try {
       const r = await preflight(envFor({ MEMLAWB_URL: s.url, MEMLAWB_PASSPHRASE: WRONG }))
       expect(r.ready).toBe(false)
       expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('unservable')
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('the proof reads one entry, not the whole namespace', async () => {
+    // The whole point of the bounded read. A test that only asserts `ready`
+    // cannot tell a single-entry probe from a full pull, so this counts what
+    // crossed the wire: a regression back to `client.pull` fetches the bodies
+    // of every entry and this goes red.
+    const ns = 'user:pf-bounded'
+    const entries: Record<string, string> = {}
+    for (let i = 0; i < 4; i++) entries[`e${i}.md`] = `body ${i}`
+    await new MemlawbClient({ url, passphrase: PASSPHRASE }).push(ns, entries)
+
+    const seen: string[] = []
+    const s = routeStub(req => {
+      const u = new URL(req.url)
+      seen.push(u.search)
+      return fetch(`${url}${u.pathname}${u.search}`)
+    })
+    try {
+      const r = await preflight(envFor({ MEMLAWB_URL: s.url, MEMLAWB_NAMESPACE: ns }))
+      expect(r.ready).toBe(true)
+      // Two bodyless hashes views: one to list the namespace for the proof, one
+      // for the precondition advertisement. Never the full read.
+      expect(seen.filter(q => q.includes('view=hashes')).length).toBe(2)
+      expect(seen.filter(q => q.includes('view=entry')).length).toBeGreaterThan(0)
+      expect(seen.filter(q => q === '' || !q.includes('view='))).toEqual([])
+      // Control: it stopped at the first entry that decrypted rather than
+      // walking the namespace, which is the whole saving.
+      expect(seen.filter(q => q.includes('view=entry')).length).toBe(1)
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('a namespace of unreadable entries is given up on, not walked to the end', async () => {
+    // The cap, which the early-break test cannot reach: when the first key
+    // decrypts the probe stops anyway, so removing PROBE_LIMIT changes nothing
+    // there. It only bites when entries keep failing, which is exactly the case
+    // where an unbounded probe would put the whole namespace back on the
+    // startup path it was removed from.
+    const listed: Record<string, string> = {}
+    for (let i = 0; i < 20; i++) listed[`k${String(i).padStart(2, '0')}.md`] = 'sha256:aa'
+    let entryReads = 0
+    const s = routeStub(req => {
+      const u = new URL(req.url)
+      if (u.search.includes('view=hashes')) {
+        return json(200, { version: 3, entryChecksums: listed, supports: [] })
+      }
+      entryReads += 1
+      return json(503, { error: { code: 'entry_unreadable', message: 'blob gone' } })
+    })
+    try {
+      const r = await preflight(envFor({ MEMLAWB_URL: s.url }))
+      expect(r.ready).toBe(false)
+      expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('unservable')
+      // The load-bearing half: bounded, not twenty.
+      expect(entryReads).toBe(5)
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('drift found before the first readable entry is reported, and does not refuse', async () => {
+    // Probing stops at the first entry that decrypts, so drift after it is not
+    // seen at all. Drift BEFORE it is free to report, and is: the passphrase is
+    // proven, so refusing would take memory away over a fault it is innocent
+    // of, but passing in silence would hide a namespace losing entries.
+    const s = routeStub(req => {
+      const u = new URL(req.url)
+      if (u.search.includes('view=hashes')) {
+        return json(200, {
+          version: 3,
+          entryChecksums: { 'a.md': 'sha256:aa', 'b.md': 'sha256:bb' },
+          supports: [],
+        })
+      }
+      if (u.search.includes('key=a.md')) {
+        return json(503, { error: { code: 'entry_unreadable', message: 'blob gone' } })
+      }
+      return fetch(`${url}${u.pathname}${u.search}`)
+    })
+    try {
+      const real = new MemlawbClient({ url, passphrase: PASSPHRASE })
+      await real.push('user:pf-drift-first', { 'b.md': 'readable' })
+      const r = await preflight(
+        envFor({ MEMLAWB_URL: s.url, MEMLAWB_NAMESPACE: 'user:pf-drift-first' }),
+      )
+      expect(r.ready).toBe(true)
+      expect(r.ready ? r.warnings.some(w => w.includes('a.md')) : false).toBe(true)
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('a server that answers nothing is refused as no answer, not as unreachable', async () => {
+    // A hung server is a different fault from a refused one and from a server
+    // that is not there: the connection was accepted, so the URL and the route
+    // are fine and only the wait failed. Saying "cannot reach" would send an
+    // operator to check DNS and firewalls for a server that answered them.
+    const s = Bun.serve({ port: 0, idleTimeout: 0, fetch: () => new Promise(() => {}) })
+    try {
+      const r = await preflight(
+        envFor({ MEMLAWB_URL: `http://localhost:${s.port}`, MEMLAWB_TIMEOUT_MS: '250' }),
+      )
+      expect(r.ready).toBe(false)
+      expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('no-answer')
+    } finally {
+      s.stop(true)
+    }
+  })
+
+  test('an unexpanded API key does not claim it would corrupt the namespace', async () => {
+    // A template service key gets a 401 and stores nothing. Telling an operator
+    // it would write memory under an unreproducible key is the passphrase's
+    // stake, and borrowing it here invites them to go looking at the wrong
+    // value while their real problem is one line away.
+    // Built rather than written literally so the file carries no template-curly
+    // string for the linter to object to.
+    const UNEXPANDED_PREFIX = `${'$'}{VAR}`
+    const s = stub(200, { version: 1, entryChecksums: {}, supports: [] })
+    try {
+      const key = await preflight(
+        envFor({ MEMLAWB_URL: s.url, MEMLAWB_API_KEY: `${UNEXPANDED_PREFIX}KEY` }),
+      )
+      const pass = await preflight(
+        envFor({ MEMLAWB_URL: s.url, MEMLAWB_PASSPHRASE: `${UNEXPANDED_PREFIX}PASS` }),
+      )
+      expect(key.ready).toBe(false)
+      expect(pass.ready).toBe(false)
+      if (key.ready || pass.ready) return
+      expect(markerOf(key.diagnostic)).toBe('misexpansion')
+      expect(key.diagnostic).not.toContain('nobody can reproduce')
+      // Control: the passphrase's stake is unchanged, so this asserts a real
+      // difference rather than the sentence having been dropped everywhere.
+      expect(pass.diagnostic).toContain('nobody can reproduce')
     } finally {
       s.stop()
     }
@@ -351,34 +588,6 @@ describe('mcp startup preflight', () => {
     expect(current.ready ? current.warnings : ['not ready']).toEqual([])
   })
 
-  test('a partially servable namespace starts, with a warning naming the shortfall', async () => {
-    // The documented half of the drift decision: one entry decrypted, so the
-    // passphrase is proven and refusing would take memory away over a fault the
-    // key is innocent of. It must not pass silently either.
-    const ns = 'user:pf-partial'
-    await new MemlawbClient({ url, passphrase: PASSPHRASE }).push(ns, {
-      'a.md': 'one',
-      'b.md': 'two',
-    })
-    const s = routeStub(async req => {
-      const u = new URL(req.url)
-      const upstream = await fetch(`${url}${u.pathname}${u.search}`)
-      if (u.search.includes('view=hashes')) return upstream
-      const body = (await upstream.json()) as { content: { entries: Record<string, string> } }
-      delete body.content.entries['b.md'] // the drift: manifest keeps it, body gone
-      return json(200, body)
-    })
-    try {
-      const r = await preflight(envFor({ MEMLAWB_URL: s.url, MEMLAWB_NAMESPACE: ns }))
-      expect(r.ready).toBe(true)
-      expect(r.ready ? r.warnings.map(w => w.includes('served 1 of the 2 entries')) : []).toEqual([
-        true,
-      ])
-    } finally {
-      s.stop()
-    }
-  })
-
   test('a hostile entry key cannot forge lines or escapes in the diagnostic', async () => {
     // The undecryptable diagnostic names the entry that failed, which is useful
     // and is also text the server chose. Diagnostics land in a launcher's log,
@@ -387,7 +596,7 @@ describe('mcp startup preflight', () => {
     const s = routeStub(req =>
       new URL(req.url).search.includes('view=hashes')
         ? json(200, { version: 1, entryChecksums: { [nasty]: 'deadbeef' }, supports: [] })
-        : json(200, { version: 1, content: { entries: { [nasty]: 'AAAAAAAAAAAAAAAAAAAA' } } }),
+        : json(200, { version: 1, key: nasty, entry: 'AAAAAAAAAAAAAAAAAAAA' }),
     )
     try {
       const r = await preflight(envFor({ MEMLAWB_URL: s.url }))
