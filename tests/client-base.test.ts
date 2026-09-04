@@ -142,6 +142,27 @@ describe('typed refusals', () => {
     expect(fresh.entries).toEqual({})
   })
 
+  test('a stale-write refusal carries the base this client actually sent', async () => {
+    // KTD3 asks the 409 text to name the base sent alongside the current hash.
+    // The server's payload only reports what each key holds NOW, so without
+    // this the client is the only party that knows what it wrote against and
+    // the information is lost at the throw.
+    const a = client()
+    const b = client()
+    const ns = 'user:cb-sentbase'
+
+    await a.push(ns, { 'x.md': 'one' })
+    await a.pull(ns)
+    const stale = (await a.hashes(ns))['x.md']
+    await b.pull(ns)
+    await b.push(ns, { 'x.md': 'two' })
+
+    const err = await a.push(ns, { 'x.md': 'three' }).catch(e => e)
+    expect(err).toBeInstanceOf(MemlawbHttpError)
+    expect(err.status).toBe(409)
+    expect(err.details?.sentBase).toEqual({ 'x.md': stale })
+  })
+
   test('the same rule holds on the hashes path, which has its own guard', async () => {
     // pull and the hashes view each decide what a 404 means, so each needs
     // covering; a fix applied to one is not a fix applied to both.

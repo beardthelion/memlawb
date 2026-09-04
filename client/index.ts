@@ -232,16 +232,13 @@ export class MemlawbClient {
       return { namespace, version: ver, uploaded, unchanged, deleted: [] }
     }
 
+    const sent = this.baseFor(namespace, [...uploaded, ...deletions])
     const res = await fetch(this.endpoint(namespace), {
       method: 'PUT',
       headers: this.headers({ 'content-type': 'application/json' }),
-      body: JSON.stringify({
-        entries: toUpload,
-        deletions,
-        ...(this.baseFor(namespace, [...uploaded, ...deletions]) ?? {}),
-      }),
+      body: JSON.stringify({ entries: toUpload, deletions, ...(sent ?? {}) }),
     })
-    if (!res.ok) throw await httpError(res)
+    if (!res.ok) throw await httpError(res, sent?.base)
     const result = (await res.json()) as { version: number; deleted: string[] }
     this.record(namespace, toUpload, deletions)
     return {
@@ -261,7 +258,7 @@ export class MemlawbClient {
       method: 'DELETE',
       headers: this.headers(),
     })
-    if (!res.ok) throw await httpError(res)
+    if (!res.ok) throw await httpError(res, seen ? { [entryKey]: seen } : undefined)
     this.record(namespace, {}, [entryKey])
   }
 
@@ -297,7 +294,16 @@ export class MemlawbClient {
   }
 }
 
-async function httpError(res: Response): Promise<MemlawbHttpError> {
+/**
+ * `sentBase` is what THIS client wrote against, which the server's payload
+ * cannot supply: a refusal reports only what each key holds now. Without it a
+ * caller can say what changed but not what it was working from, and KTD3 asks
+ * the tool text for both.
+ */
+async function httpError(
+  res: Response,
+  sentBase?: Record<string, string | null>,
+): Promise<MemlawbHttpError> {
   let code = 'unknown'
   let details: Record<string, unknown> | undefined
   let detail = ''
@@ -315,7 +321,7 @@ async function httpError(res: Response): Promise<MemlawbHttpError> {
     `memlawb ${res.status} ${res.statusText}: ${detail}`,
     res.status,
     code,
-    details,
+    sentBase ? { ...details, sentBase } : details,
   )
 }
 
