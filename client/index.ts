@@ -171,18 +171,16 @@ export class MemlawbClient {
     if (!res.ok) throw await httpError(res)
     const data = (await res.json()) as {
       version: number
-      content: { entries: Record<string, string>; entryChecksums?: Record<string, string> }
+      content: { entries: Record<string, string> }
     }
     const key = this.key(namespace)
     const entries: Record<string, string> = {}
-    for (const [entryKey, b64] of Object.entries(data.content.entries)) {
-      entries[entryKey] = decryptEntry(key, entryKey, b64)
-    }
-    // This is a read the caller asked for, so it is what a later write's base
-    // is measured against. Derive from the bodies rather than trusting the
-    // checksum map, so the base reflects what was actually decrypted here.
+    // The base is derived from the bodies rather than the response's checksum
+    // map, so it reflects what was actually decrypted here. This is a read the
+    // caller asked for, so it is what a later write's base is measured against.
     const seen: Record<string, string> = {}
     for (const [entryKey, b64] of Object.entries(data.content.entries)) {
+      entries[entryKey] = decryptEntry(key, entryKey, b64)
       seen[entryKey] = ciphertextHash(b64)
     }
     this.observed.set(namespace, seen)
@@ -210,7 +208,8 @@ export class MemlawbClient {
     }
 
     const key = this.key(namespace)
-    const serverHashes = (await this.hashesView(namespace)).entryChecksums
+    const view = await this.hashesView(namespace)
+    const serverHashes = view.entryChecksums
 
     const toUpload: Record<string, string> = {}
     const uploaded: string[] = []
@@ -227,9 +226,10 @@ export class MemlawbClient {
 
     const deletions = opts?.deletions ?? []
     if (uploaded.length === 0 && deletions.length === 0) {
-      // Nothing to do; report current server version.
-      const ver = await this.version(namespace)
-      return { namespace, version: ver, uploaded, unchanged, deleted: [] }
+      // Nothing to do. The version comes from the read above rather than a
+      // second request: asking again cost a round trip on the commonest write
+      // an agent makes, and that second read had its own 404 rule.
+      return { namespace, version: view.version, uploaded, unchanged, deleted: [] }
     }
 
     const sent = this.baseFor(namespace, [...uploaded, ...deletions])
@@ -284,13 +284,6 @@ export class MemlawbClient {
     if (!seen) return
     for (const [k, b64] of Object.entries(written)) seen[k] = ciphertextHash(b64)
     for (const k of deleted) delete seen[k]
-  }
-
-  private async version(namespace: string): Promise<number> {
-    const res = await fetch(`${this.endpoint(namespace)}?view=hashes`, { headers: this.headers() })
-    if (res.status === 404) return 0
-    if (!res.ok) throw await httpError(res)
-    return ((await res.json()) as { version: number }).version
   }
 }
 

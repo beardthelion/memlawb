@@ -163,6 +163,29 @@ describe('typed refusals', () => {
     expect(err.details?.sentBase).toEqual({ 'x.md': stale })
   })
 
+  test('a no-op push reads once and reports that read version', async () => {
+    // push already reads the namespace to compute the delta, and that read
+    // carries the version. Asking again was a second round trip on the most
+    // common write an agent makes (re-saving a fact that has not changed), and
+    // the second read had its own 404 rule that returned version 0 for any
+    // 404, turning a denial into a successful no-op write.
+    let hits = 0
+    const s = Bun.serve({
+      port: 0,
+      fetch: () => {
+        hits += 1
+        return new Response(JSON.stringify({ version: 7, entryChecksums: {}, supports: [] }), {
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    const c = new MemlawbClient({ url: `http://localhost:${s.port}`, passphrase: 'pw' })
+    const r = await c.push('user:x', {})
+    s.stop(true)
+    expect(hits).toBe(1)
+    expect(r.version).toBe(7)
+  })
+
   test('the same rule holds on the hashes path, which has its own guard', async () => {
     // pull and the hashes view each decide what a 404 means, so each needs
     // covering; a fix applied to one is not a fix applied to both.

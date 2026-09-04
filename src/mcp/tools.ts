@@ -31,8 +31,28 @@ export type MemoryClient = {
   delete(namespace: string, entryKey: string): Promise<void>
 }
 
+/** Entry order by key. Not the default sort, which compares "key,value" pairs. */
+const byKey = ([a]: [string, unknown], [b]: [string, unknown]) => (a < b ? -1 : 1)
+
 const ok = (text: string): ToolResult => ({ text })
 const fail = (text: string): ToolResult => ({ text, isError: true })
+
+/**
+ * The subtree a key actually reaches, derived from the configured namespace.
+ *
+ * `authorizeNamespace` grants an owner `user:<owner>` and its children, so the
+ * prefix is the owner root, never the configured namespace itself. The guide
+ * and the setup card both ask a developer to run one namespace per codebase,
+ * which makes a configured `user:alice/repo/x` the normal case; naming that as
+ * the limit would be false and would send the model to retarget inside a
+ * subtree narrower than the one it has. A namespace that is not `user:`-scoped
+ * is not grantable at all, so it is reported unchanged.
+ */
+function ownerRoot(namespace: string): string {
+  if (!namespace.startsWith('user:')) return namespace
+  const slash = namespace.indexOf('/')
+  return slash === -1 ? namespace : namespace.slice(0, slash)
+}
 
 /**
  * Render a server refusal as text a model can act on.
@@ -51,23 +71,6 @@ const fail = (text: string): ToolResult => ({ text, isError: true })
  * Returns null when the error is not a typed HTTP refusal, so the caller keeps
  * its generic message rather than dressing up an unknown failure.
  */
-/**
- * The subtree a key actually reaches, derived from the configured namespace.
- *
- * `authorizeNamespace` grants an owner `user:<owner>` and its children, so the
- * prefix is the owner root, never the configured namespace itself. The guide
- * and the setup card both ask a developer to run one namespace per codebase,
- * which makes a configured `user:alice/repo/x` the normal case; naming that as
- * the limit would be false and would send the model to retarget inside a
- * subtree narrower than the one it has. A namespace that is not `user:`-scoped
- * is not grantable at all, so it is reported unchanged.
- */
-function ownerRoot(namespace: string): string {
-  if (!namespace.startsWith('user:')) return namespace
-  const slash = namespace.indexOf('/')
-  return slash === -1 ? namespace : namespace.slice(0, slash)
-}
-
 function denial(
   action: string,
   namespace: string,
@@ -106,7 +109,7 @@ function sentBaseLine(details: Record<string, unknown> | undefined): string {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return ''
   const parts = Object.entries(raw as Record<string, unknown>)
     .filter(([, v]) => typeof v === 'string')
-    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .sort(byKey)
     .map(([k, v]) => `"${k}" at ${v as string}`)
   return parts.length === 0 ? '' : ` This write was computed against ${parts.join(', ')}.`
 }
@@ -120,7 +123,7 @@ function conflictLines(details: Record<string, unknown> | undefined): string {
   const entries = Object.entries(raw as Record<string, unknown>)
   if (entries.length === 0) return 'The server did not name the conflicting keys.'
   const parts = entries
-    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .sort(byKey)
     .map(([k, v]) => `"${k}" now holds ${typeof v === 'string' ? v : 'no entry'}`)
   return `Changed since this session read it: ${parts.join(', ')}.`
 }

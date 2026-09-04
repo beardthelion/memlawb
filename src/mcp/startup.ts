@@ -94,6 +94,13 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
   // 3, 4, 5. One authenticated read of the pinned namespace separates a
   // transport failure from a refusal, and a rejected key from a namespace this
   // key does not own. They are debugged in completely different places.
+  // Built once: an unmapped status can surface from either read, and two
+  // copies of the same sentence are two chances for them to drift apart.
+  const refuseHttp = (err: MemlawbHttpError) =>
+    refuse(
+      `the memlawb server at ${url} refused the startup read of "${namespace}" with HTTP ${err.status} (${err.code}). ${err.message}`,
+    )
+
   let checksums: Record<string, string>
   try {
     checksums = await client.hashes(namespace)
@@ -120,9 +127,7 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
           'Point MEMLAWB_NAMESPACE at a namespace this key owns, or use the key that owns this one.',
       )
     }
-    return refuse(
-      `the memlawb server at ${url} refused the startup read of "${namespace}" with HTTP ${err.status} (${err.code}). ${err.message}`,
-    )
+    return refuseHttp(err)
   }
 
   // 6. Undecryptable namespace. This can only run once the read above reports
@@ -135,9 +140,7 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
       await client.pull(namespace)
     } catch (err) {
       if (err instanceof MemlawbHttpError) {
-        return refuse(
-          `the memlawb server at ${url} refused the startup read of "${namespace}" with HTTP ${err.status} (${err.code}). ${err.message}`,
-        )
+        return refuseHttp(err)
       }
       return refuse(
         `MEMLAWB_PASSPHRASE cannot decrypt the existing entries in namespace "${namespace}". ` +
@@ -150,4 +153,6 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
   return { ready: true, client, url, namespace }
 }
 
-const refuse = (diagnostic: string): PreflightResult => ({ ready: false, diagnostic })
+function refuse(diagnostic: string): PreflightResult {
+  return { ready: false, diagnostic }
+}
