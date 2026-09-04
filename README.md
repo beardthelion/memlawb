@@ -91,6 +91,17 @@ bun run bin/memlawb.ts push ./my-memories user:me   # encrypt + upload
 bun run bin/memlawb.ts pull ./restored      user:me   # download + decrypt
 ```
 
+To configure an agent rather than sync a directory, generate the block to paste:
+
+```bash
+# prints the MCP config block, plus a fresh passphrase shown once
+MEMLAWB_API_KEY=<your key> bun run bin/memlawb.ts setup <owner> https://memory.gitlawb.com
+```
+
+The passphrase is generated locally and never leaves the machine: it is printed
+for you to store, and the block carries a placeholder rather than the value. The
+URL must be `https` unless it points at a loopback host.
+
 What lands on the server is ciphertext — `grep` your data dir for any plaintext
 and you'll find nothing.
 
@@ -170,6 +181,7 @@ All bodies are ciphertext; the server validates sizes/hashes without decrypting.
 | `GET`  | `/health` | liveness |
 | `GET`  | `/api/memory/:ns` | full data (ciphertext entries + checksums) |
 | `GET`  | `/api/memory/:ns?view=hashes` | per-key checksums only (for delta) |
+| `GET`  | `/api/memory/:ns?view=entry&key=<entryKey>` | one entry's ciphertext, without fetching the rest |
 | `PUT`  | `/api/memory/:ns` | delta upsert `{ entries, deletions?, base? }` |
 | `DELETE` | `/api/memory/:ns?key=<entryKey>[&base=sha256:<hex>]` | remove one entry |
 
@@ -179,6 +191,20 @@ scoping. Entry keys mirror the memdir layout (`MEMORY.md`, `feedback/x.md`).
 The hashes view also reports `supports` (server capabilities a client can rely
 on) and `erasure` (whether this deployment's store actually removes bytes on
 delete); write responses carry `erasure` too.
+
+The entry view answers with that key's base64 ciphertext and checksum, byte for
+byte what the full read returns under the same key. It exists so a caller can
+check one entry without downloading a namespace, and it distinguishes three
+answers a single status would blur: `404 empty` (no such namespace),
+`404 entry_not_found` (the namespace exists, the key does not), and
+`503 entry_unreadable` (the manifest names the key and the store cannot produce
+its body).
+
+A write may be sent with a `base` mapping each touched key to the ciphertext
+hash the client last saw, or `null` to assert the key must not exist. The server
+answers `409 stale_base_version` when that disagrees with its manifest, naming
+the keys that moved. A write with no `base` is unconditional, so a client that
+predates this keeps working.
 
 `base` is an optional precondition: a map of entry key to the ciphertext hash
 the caller believes that key holds, or `null` for "should not exist". A request
@@ -206,6 +232,12 @@ size/count limits.
 - **Defense in depth:** a client-side secret scanner runs before encryption and
   (by default) blocks uploads containing live-looking credentials. Override with
   `MEMLAWB_SCAN=warn|off`.
+- **Startup refusal:** the MCP server checks its configuration against the
+  pinned namespace before serving a tool, and exits rather than start on one
+  that would corrupt stored memory: unexpanded template text in a secret, a
+  passphrase that cannot decrypt what is stored, a rejected key, an unauthorized
+  namespace, or a scan mode it does not recognize. Every wait is bounded;
+  `MEMLAWB_TIMEOUT_MS` raises the limit on a slow link.
 - **Tenancy:** each API key maps to an owner who controls exactly their own
   `user:<owner>` namespace subtree (strict segment match, no substring escapes);
   per-account quotas and per-owner rate limits are enforced server-side.
