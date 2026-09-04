@@ -42,6 +42,14 @@ jobs:
           bun-version: '1.2'
       - run: bun install --frozen-lockfile
       - run: bunx biome ci && bun run type-check && bun test
+      # `npm publish` fires `prepack`, which builds, so `dist/` reaches the
+      # tarball without an explicit step here (verified with `npm publish
+      # --dry-run` after deleting `dist/`). This runs the packed-tarball check
+      # anyway: publishing a package no consumer can install is the one failure
+      # every in-repo gate is structurally blind to, and it is unrecoverable
+      # once a version is on the registry.
+      - name: Verify the artifact a consumer will install
+        run: bun run test:package
 
       # npm
       - uses: actions/setup-node@v4

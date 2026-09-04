@@ -55,7 +55,8 @@
     "check": "biome check",
     "check:fix": "biome check --write",
     "format": "biome format --write",
-    "lint": "biome lint"
+    "lint": "biome lint",
+    "test:package": "bun run scripts/packed-tarball-test.ts"
   },
   "exports": {
     ".": {
