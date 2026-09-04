@@ -102,8 +102,11 @@ try {
       cmdSetup(a, b)
       break
     case 'mcp':
-      // Stdio MCP server. Imported lazily so push/pull/serve don't pay for it.
-      await import('../src/mcp/server.ts')
+      // Stdio MCP server. Imported lazily so push/pull/serve don't pay for it,
+      // and CALLED rather than imported for effect: startup lives in a function
+      // so it can preflight, and an import alone would exit zero having served
+      // nothing.
+      await (await import('../src/mcp/server.ts')).main()
       break
     case 'serve':
       await import('../src/index.ts')

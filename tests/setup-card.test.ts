@@ -110,7 +110,15 @@ describe('setup card — the pasted block (R16)', () => {
   })
 
   test('the env keys are exactly the ones the MCP server reads', () => {
-    const src = readFileSync(new URL('../src/mcp/server.ts', import.meta.url), 'utf8')
+    // Both modules, because env reading lives in startup.ts since the preflight
+    // landed while the server module still owns the transport. Naming only the
+    // file that happens to read them today turns this guard red on a move that
+    // changed nothing, and naming only the other one would miss a key moving
+    // back. What it asserts is that the key is read SOMEWHERE the MCP server
+    // runs, which is the property the card depends on.
+    const src = ['../src/mcp/server.ts', '../src/mcp/startup.ts']
+      .map(f => readFileSync(new URL(f, import.meta.url), 'utf8'))
+      .join('\n')
     const card = renderSetupCard('zero', { owner: 'alice', url: HOSTED, apiKey: KEY })
     const env = (configBlock(card) as { mcpServers: { memlawb: { env: Record<string, string> } } })
       .mcpServers.memlawb.env
