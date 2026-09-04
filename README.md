@@ -102,12 +102,40 @@ The passphrase is generated locally and never leaves the machine: it is printed
 for you to store, and the block carries a placeholder rather than the value. The
 URL must be `https` unless it points at a loopback host.
 
+That block is a public interface, not example output. The consumer integrations
+point back at it rather than restating it, and the packaging test asserts that
+every environment variable it emits is one the server still reads, so a rename
+here fails in this repository instead of at spawn time in another one.
+
 What lands on the server is ciphertext — `grep` your data dir for any plaintext
 and you'll find nothing.
 
 > ⚠️ **Zero-knowledge means no recovery.** If you lose your passphrase, the host
 > cannot help you — the data is unreadable to everyone but the key holder. Back
 > up your passphrase.
+
+## Install
+
+Three ways in, depending on what the machine already has.
+
+```bash
+npm install @gitlawb/memlawb     # Node 20+, or any npm-compatible installer
+bun add @gitlawb/memlawb         # Bun resolves the TypeScript source directly
+```
+
+For a machine with neither runtime, each release attaches standalone binaries
+with a `SHA256SUMS` file. The runtime is baked in, so they are large (tens of
+MB) and need nothing installed:
+
+```bash
+curl -LO https://github.com/Gitlawb/memlawb/releases/latest/download/memlawb-linux-x64
+chmod +x memlawb-linux-x64 && ./memlawb-linux-x64 setup <owner>
+```
+
+Under Node the client commands all work: `push`, `pull`, `setup` and `mcp`.
+`memlawb serve` needs Bun, because the server uses Bun's HTTP and S3 APIs, and
+says so rather than failing obscurely. Use `bunx @gitlawb/memlawb serve` or the
+container image for self-hosting.
 
 ## Use as a library
 
@@ -201,7 +229,11 @@ answers a single status would blur: `404 empty` (no such namespace),
 its body).
 
 A write may be sent with a `base` mapping each touched key to the ciphertext
-hash the client last saw, or `null` to assert the key must not exist. The server
+hash the client last saw, or `null` to assert the key must not exist. Only reads
+a caller asked for fill that map, so the guarantee belongs to a long-lived
+client, which in practice means the MCP server across a session. `memlawb push`
+builds a fresh client per invocation and has read nothing, so it sends no base
+and its writes are unconditional by design. The server
 answers `409 stale_base_version` when that disagrees with its manifest, naming
 the keys that moved. A write with no `base` is unconditional, so a client that
 predates this keeps working.

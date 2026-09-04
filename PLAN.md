@@ -49,7 +49,7 @@ A later optional "searchable tier" can do server-side encrypted search (see §7)
 ```
 agent (openclaude / Claude Code / Cursor / opencode / SDK)
    │
-   ├─ Path A  native sync  → speaks /team_memory contract (openclaude, ~0 changes)
+   ├─ Path A  native sync  → speaks the /api/memory contract directly (not built)
    ├─ Path B  MCP tools    → memory_save / recall / search / list (universal)
    └─ Path C  local daemon → mirrors ~/.claude memdir to cloud (tool-agnostic)
         │
@@ -72,8 +72,10 @@ Namespace = unit of sharing/scoping. Examples: `user:<id>` (private),
 `repo:<owner>/<name>` (team), `agent:<id>`. Each namespace holds entries keyed by path
 (`MEMORY.md`, `feedback/x.md`, ...), mirroring the memdir layout.
 
-**Sync API (Path A — openclaude drop-in).** Mirror the existing contract so openclaude
-works by changing a base URL:
+**Sync API (Path A).** The HTTP contract a caller can speak directly. Note this is
+not an openclaude drop-in: openclaude has no memlawb integration today, and the
+one that is planned goes through the MCP tools (Path B) rather than this route.
+The routes are:
 
 - `GET  /api/memory/:namespace`            → full data + entryChecksums
 - `GET  /api/memory/:namespace?view=hashes`→ metadata + per-key checksums only
@@ -105,7 +107,7 @@ so the remote memlawb server still only sees ciphertext.
 - Create `Gitlawb/memlawb` OSS repo (MIT, release-please + GHCR — match node).
 - Lock crypto choices, API schema (Zod), namespace/ACL model.
 
-**Phase 1 — Hosted MVP, openclaude drop-in (highest leverage).**
+**Phase 1 — Hosted MVP (highest leverage).**
 - memlawb server (Bun/Fly): auth, `/api/memory` sync contract, Postgres index,
   Tigris/S3 private BlobStore. Server is crypto-blind (stores ciphertext).
 - openclaude client change: configurable team-memory base URL + a thin E2E-encrypt
