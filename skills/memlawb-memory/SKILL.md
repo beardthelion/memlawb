@@ -52,6 +52,29 @@ selectively — signal, not transcript.
 If asked to "remember" something already in the repo, save instead what was
 *non-obvious* about it.
 
+## Which memory system gets the fact
+
+More than one memory system can be live at once, and they fire on the same
+trigger, so route by what the fact is rather than by whichever system asked
+first.
+
+- **memlawb** takes durable facts that must survive across machines: user
+  preferences, project decisions, conventions, and feedback on how to work. If
+  the fact will still be true next month on a different machine, save it here
+  with `memory_save`, and do that even when the host agent would also write it
+  down somewhere local.
+- **The host agent's local memdir** keeps the session log: what you did this
+  session, what you tried, where you left off. That stays on this machine and
+  does not belong in memlawb.
+- **Team memory** keeps repo-shared facts, the ones every contributor to the
+  repository needs: build and release steps, review conventions, anything that
+  would read the same for a teammate. Put those in the repo rather than in your
+  personal memlawb namespace.
+
+For a fact that seems to fit two of them, ask who needs it. You, on every
+machine, is memlawb. This session only is the memdir log. Everyone working on
+the repository is team memory.
+
 ## How to call the tools
 
 - `memory_save(key, content)` — `key` is a path that mirrors a memory directory
@@ -90,9 +113,16 @@ Why: <why it matters — for feedback/project>
   written. If it names a file, flag, or decision, confirm it still holds before
   acting on it.
 
-## Namespaces (when scoping matters)
+## Namespaces
 
 Each tool optionally takes a `namespace`; it defaults to the one this MCP server
-is configured with (typically `user:<you>`). Use a different namespace only to
-separate distinct scopes — e.g. a per-project space (`user:<you>/acme`) — and be
-consistent so recall later finds it.
+is configured with. Whatever you pass has to sit inside the subtree you are
+authorized for. The server grants an owner `user:<owner>` and its children, and
+refuses everything else, so every namespace you use starts with `user:<owner>`.
+
+Inside that subtree, keep one namespace per codebase instead of one namespace
+for all your work: `user:<owner>/<repo>` while working on a repository, and
+`user:<owner>` for facts about you that hold everywhere. A single namespace for
+everything puts unrelated projects into the same recall corpus, which pushes the
+entries you actually want down the ranking. Be consistent about the name you
+pick, so a later recall looks in the place the fact was saved.

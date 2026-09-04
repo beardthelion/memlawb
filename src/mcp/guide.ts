@@ -13,7 +13,13 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const FALLBACK = `# memlawb memory
+/**
+ * Served only when SKILL.md can't be read. Exported so tests can prove the
+ * loaded guide is the FILE and not this: the routing rule lives in both, so
+ * every rule assertion would pass on the fallback and a broken path
+ * resolution would ship unnoticed without that control.
+ */
+export const FALLBACK = `# memlawb memory
 
 You have durable, end-to-end-encrypted memory via the memlawb MCP tools.
 
@@ -26,6 +32,9 @@ You have durable, end-to-end-encrypted memory via the memlawb MCP tools.
   from the repo. Never save secrets.
 - **Maintain it.** Search before adding to avoid duplicates; update or
   \`memory_delete\` facts that are wrong or stale; keep a \`MEMORY.md\` index.
+- **Route by what the fact is.** memlawb takes durable facts that must survive
+  across machines, the host agent's local memdir keeps the session log, and
+  repo-shared facts belong in team memory.
 
 Tools: memory_save(key, content) · memory_recall(query, limit?) ·
 memory_search(query) · memory_list() · memory_delete(key).`
@@ -54,5 +63,8 @@ export const SHORT_INSTRUCTIONS =
   'user and project before asking them to repeat it. When you learn a stable ' +
   'fact (a preference, a project decision, a convention, or feedback on how to ' +
   'work), persist it with memory_save; skip transient context and never save ' +
-  'secrets. Search before adding to avoid duplicates. Call the "memory_guide" ' +
+  'secrets. Route by what the fact is: memlawb takes durable facts that must ' +
+  "survive across machines, the host agent's local memdir keeps the session " +
+  'log, and repo-shared facts belong in team memory. ' +
+  'Search before adding to avoid duplicates. Call the "memory_guide" ' +
   'prompt for the full protocol.'
