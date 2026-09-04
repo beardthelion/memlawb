@@ -62,9 +62,45 @@ export function generatePassphrase(): string {
   return out
 }
 
+/**
+ * The namespace-grammar rule this module reimplements rather than reuses.
+ *
+ * The real rules live server-side and stay the authority: validateNamespace in
+ * src/namespace.ts (the `^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._/-]{1,128}$`
+ * grammar plus a hard reject of `..` and `//`), and authorizeNamespace in
+ * src/auth.ts:128-133, which compares the owner as a WHOLE path segment
+ * terminated by end-of-string or `/`. This file reaches neither, because it
+ * reaches nothing at all: the zero-dependency rule above is what makes "the
+ * passphrase never leaves the process" structural. So the check below is a
+ * deliberate duplicate, and this comment is the pointer that keeps it
+ * traceable rather than letting it drift silently.
+ *
+ * Narrowed to a single path segment: the server's character set minus `/`,
+ * which cannot appear here because a `/` in the owner moves the very segment
+ * authorizeNamespace matches on (`alice/../bob` renders `user:alice/../bob`,
+ * which the auth rule grants to alice while storage reads it as somewhere
+ * else). The first character is alphanumeric, the shape validateEntryKey uses,
+ * so `.` and `-` cannot lead. 63 is the cap because `<owner>/<repo>` has to fit
+ * the server's 128-character budget after the scope.
+ *
+ * Fail-closed by allowlist, since the space of bad names is open-ended, and
+ * refused rather than sanitized: a rewritten owner is a namespace the user did
+ * not ask for, and it would fail at the first save with nothing to read.
+ */
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/
+
+function assertName(kind: 'owner' | 'repo', value: string): string {
+  if (typeof value === 'string' && NAME_RE.test(value) && !value.includes('..')) return value
+  throw new Error(
+    `setup: ${JSON.stringify(value)} is not a usable ${kind}. A ${kind} is 1 to 63 characters of ` +
+      `letters, digits, '.', '-' or '_', starting with a letter or a digit. The server refuses ` +
+      `anything else, so the card refuses it here rather than at your first save.`,
+  )
+}
+
 /** The owner's whole-memory namespace. */
 export function ownerNamespace(owner: string): string {
-  return `user:${owner}`
+  return `user:${assertName('owner', owner)}`
 }
 
 /**
@@ -80,7 +116,7 @@ export function ownerNamespace(owner: string): string {
  * restating it, so they cannot drift apart again.
  */
 export function repoNamespace(owner: string, repo: string): string {
-  return `user:${owner}/${repo}`
+  return `user:${assertName('owner', owner)}/${assertName('repo', repo)}`
 }
 
 const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
@@ -103,6 +139,19 @@ export function assertServiceUrl(url: string): string {
   } catch {
     throw new Error(`setup: ${url || '(empty)'} is not a URL. Use an https URL.`)
   }
+  // No credentials in the URL. The service key already has its own env var in
+  // the block, and the block is a file the user pastes around and copies
+  // between machines, so a second copy of a credential riding in the URL is
+  // just spread with nothing reading it from there. Refused, not stripped, for
+  // the same reason the owner is: a quietly rewritten URL is not the one the
+  // caller asked for. Checked before the protocol rules, so the loopback
+  // exemption (which is about there being no network to listen on) does not
+  // excuse it.
+  if (parsed.username !== '' || parsed.password !== '')
+    throw new Error(
+      `setup: the service URL must not carry a username or password. Put the service key in ` +
+        `MEMLAWB_API_KEY in the block, not in MEMLAWB_URL.`,
+    )
   if (parsed.protocol === 'https:') return url
   if (parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname)) return url
   throw new Error(

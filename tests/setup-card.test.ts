@@ -413,3 +413,173 @@ describe('memlawb setup (CLI)', () => {
     expect(r.stdout).not.toContain('mcpServers')
   })
 })
+
+/**
+ * Credentials in the URL. The card is a block the user pastes into a config
+ * file and copies between machines, and the service key already has its own
+ * env var in that block. A userinfo component puts a second copy of a
+ * credential somewhere nothing reads it from, so it is refused rather than
+ * stripped: a silently rewritten URL is not the one the caller asked for.
+ *
+ * Every refusal below is paired with the neighbouring URL that differs only by
+ * the userinfo, because a validator that refused everything would pass the
+ * refusals on its own.
+ */
+describe('setup card — the URL carries no credentials (R23)', () => {
+  test('a userinfo component is refused and the same url without it is accepted', () => {
+    for (const [bad, good] of [
+      ['https://key@memory.gitlawb.com', 'https://memory.gitlawb.com'],
+      ['https://user:pw@memory.gitlawb.com', 'https://memory.gitlawb.com'],
+      ['https://:pw@memory.gitlawb.com', 'https://memory.gitlawb.com'],
+      ['https://key@memory.gitlawb.com/path', 'https://memory.gitlawb.com/path'],
+    ]) {
+      expect(() => assertServiceUrl(bad)).toThrow(/MEMLAWB_API_KEY/)
+      expect(`${good} -> ${assertServiceUrl(good)}`).toBe(`${good} -> ${good}`)
+    }
+  })
+
+  test('loopback does not excuse credentials', () => {
+    // The http exemption is about there being no network to listen on, which
+    // says nothing about a credential landing in a pasted file.
+    expect(() => assertServiceUrl('http://key@localhost:8080')).toThrow(/MEMLAWB_API_KEY/)
+    expect(assertServiceUrl('http://localhost:8080')).toBe('http://localhost:8080')
+  })
+
+  test('the card refuses to render a url with credentials', () => {
+    expect(() =>
+      renderSetupCard('openclaude', {
+        owner: 'alice',
+        url: 'https://key@memory.gitlawb.com',
+        apiKey: KEY,
+      }),
+    ).toThrow(/MEMLAWB_API_KEY/)
+    // ... and still renders the same url without the userinfo.
+    expect(
+      renderSetupCard('openclaude', {
+        owner: 'alice',
+        url: 'https://memory.gitlawb.com',
+        apiKey: KEY,
+      }),
+    ).toContain('"MEMLAWB_URL": "https://memory.gitlawb.com"')
+  })
+})
+
+/**
+ * Owner and repo validation. The rendered namespace is what decides whether the
+ * first save succeeds, so a name the server will refuse should fail here, at
+ * render time, where the message can say why, rather than as an opaque 400 on
+ * the user's first memory write.
+ *
+ * Each rejected class is paired with an accepted neighbour, and every accepted
+ * owner is driven through the real authorizeNamespace in both directions, so a
+ * validator that refused everything (or one that let `/` through and moved the
+ * owner segment) cannot pass this block.
+ */
+const BAD_NAMES = [
+  ['a/b', 'a slash makes the owner segment something else entirely'],
+  ['a//b', 'double slash'],
+  ['..', 'traversal'],
+  ['a..b', 'traversal inside a name'],
+  ['../etc', 'traversal prefix'],
+  ['a b', 'whitespace'],
+  ['a\tb', 'tab'],
+  ['a\nb', 'newline'],
+  ['a:b', 'a colon, which the namespace grammar reserves for the scope'],
+  ['user:alice', 'an already-qualified namespace'],
+  ['', 'empty'],
+  ['.hidden', 'leading dot'],
+  ['-alice', 'leading dash'],
+  ['_alice', 'leading underscore'],
+  ['/alice', 'leading slash'],
+  ['alice/', 'trailing slash'],
+  ['a\\b', 'backslash'],
+  ['a\0b', 'NUL'],
+  ['alicé', 'non-ascii'],
+  ['a#b', 'fragment character'],
+  ['a?b', 'query character'],
+  ['a%2fb', 'percent-encoded slash'],
+  ['a'.repeat(64), 'over the segment length cap'],
+]
+
+const GOOD_NAMES = ['a', 'ab', 'alice', 'a-b', 'a_b', 'a.b', 'ABC123', '0', 'a'.repeat(63)]
+
+describe('setup card — owner and repo are validated before they become a namespace', () => {
+  test('a bad owner is refused rather than silently rewritten', () => {
+    for (const [owner, why] of BAD_NAMES) {
+      expect(
+        `${why}: ${(() => {
+          try {
+            return ownerNamespace(owner)
+          } catch (e) {
+            return `refused: ${(e as Error).message.includes('owner')}`
+          }
+        })()}`,
+      ).toBe(`${why}: refused: true`)
+    }
+  })
+
+  test('an ordinary owner still renders and is authorized for exactly its owner', () => {
+    for (const owner of GOOD_NAMES) {
+      const ns = ownerNamespace(owner)
+      expect(ns).toBe(`user:${owner}`)
+      expect(`${owner} owns ${ns}: ${authorizeNamespace(id(owner), ns)}`).toBe(
+        `${owner} owns ${ns}: true`,
+      )
+      const other = owner === 'alice' ? 'bob' : 'alice'
+      expect(`${other} owns ${ns}: ${authorizeNamespace(id(other), ns)}`).toBe(
+        `${other} owns ${ns}: false`,
+      )
+    }
+  })
+
+  test('a bad repo is refused rather than silently rewritten', () => {
+    for (const [repo, why] of BAD_NAMES) {
+      expect(
+        `${why}: ${(() => {
+          try {
+            return repoNamespace('alice', repo)
+          } catch (e) {
+            return `refused: ${(e as Error).message.includes('repo')}`
+          }
+        })()}`,
+      ).toBe(`${why}: refused: true`)
+    }
+  })
+
+  test('an ordinary repo still renders inside the owner subtree', () => {
+    for (const repo of GOOD_NAMES) {
+      const ns = repoNamespace('alice', repo)
+      expect(ns).toBe(`user:alice/${repo}`)
+      expect(`alice owns ${ns}: ${authorizeNamespace(id('alice'), ns)}`).toBe(
+        `alice owns ${ns}: true`,
+      )
+      expect(`bob owns ${ns}: ${authorizeNamespace(id('bob'), ns)}`).toBe(`bob owns ${ns}: false`)
+    }
+  })
+
+  test('the card refuses a bad owner or repo instead of rendering a block', () => {
+    expect(() =>
+      renderSetupCard('openclaude', { owner: 'alice/evil', url: HOSTED, apiKey: KEY }),
+    ).toThrow(/owner/)
+    expect(() =>
+      renderSetupCard('openclaude', { owner: 'alice', url: HOSTED, apiKey: KEY, repo: '../evil' }),
+    ).toThrow(/repo/)
+    // The neighbouring good input still renders both namespaces.
+    const card = renderSetupCard('openclaude', {
+      owner: 'alice',
+      url: HOSTED,
+      apiKey: KEY,
+      repo: 'memlawb',
+    })
+    expect(card).toContain('"MEMLAWB_NAMESPACE": "user:alice"')
+    expect(card).toContain('user:alice/memlawb')
+  })
+
+  test('a rejected owner never reaches a namespace the server would authorize elsewhere', () => {
+    // The concrete harm: `alice/../bob` would render `user:alice/../bob`, which
+    // authorizeNamespace grants to alice because it is a textual child of her
+    // root, while the storage layer reads it as bob's subtree.
+    expect(authorizeNamespace(id('alice'), 'user:alice/../bob')).toBe(true)
+    expect(() => ownerNamespace('alice/../bob')).toThrow(/owner/)
+  })
+})
