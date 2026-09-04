@@ -1,0 +1,288 @@
+/**
+ * Setup card tests. The card is what a first-time user pastes, so two
+ * properties matter more than its wording: the namespace it pins must be one
+ * the server will actually authorize for that owner and nobody else, and the
+ * passphrase must never be something this module could put on the wire.
+ *
+ * The passphrase claim is proved two ways here: a type-level pin that the
+ * render function takes no passphrase, and a structural read of the module
+ * source showing it imports nothing and names no network capability. A
+ * request-capture assertion would pass by construction against a module that
+ * makes no call, so it is deliberately absent.
+ */
+
+import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import {
+  assertServiceUrl,
+  generatePassphrase,
+  ownerNamespace,
+  PASSPHRASE_ALPHABET,
+  PASSPHRASE_LENGTH,
+  renderSetupCard,
+  repoNamespace,
+} from '../client/setup.ts'
+import { authorizeNamespace } from '../src/auth.ts'
+
+const id = (owner: string) => ({ owner })
+const HOSTED = 'https://memory.gitlawb.com'
+const KEY = 'mk_live_example'
+
+describe('setup card — namespace authorization (AE6, R19)', () => {
+  test('the owner default is authorized for its owner and refused for another', () => {
+    const ns = ownerNamespace('alice')
+    expect(renderSetupCard('openclaude', { owner: 'alice', url: HOSTED, apiKey: KEY })).toContain(
+      `"MEMLAWB_NAMESPACE": "${ns}"`,
+    )
+    expect(authorizeNamespace(id('alice'), ns)).toBe(true)
+    expect(authorizeNamespace(id('bob'), ns)).toBe(false)
+    // The sibling-prefix case the auth rule exists for.
+    expect(authorizeNamespace(id('alic'), ns)).toBe(false)
+    // Control for the two refusals above: authorizeNamespace does return true
+    // for a caller that owns this namespace, so `false` is a discriminating
+    // answer rather than a rule that refuses everything. (src/auth.ts is not
+    // mutable from here, so this stands in for neutering the rule itself.)
+    expect(authorizeNamespace(id('local'), ns)).toBe(true)
+  })
+
+  test('the per-repository form is documented and stays inside the owner subtree', () => {
+    const card = renderSetupCard('openclaude', {
+      owner: 'alice',
+      url: HOSTED,
+      apiKey: KEY,
+      repo: 'memlawb',
+    })
+    const perRepo = repoNamespace('alice', 'memlawb')
+    // Both forms appear: the owner default in the block, the per-repo form as
+    // the documented convention beside it.
+    expect(card).toContain(ownerNamespace('alice'))
+    expect(card).toContain(perRepo)
+    expect(authorizeNamespace(id('alice'), perRepo)).toBe(true)
+    expect(authorizeNamespace(id('bob'), perRepo)).toBe(false)
+  })
+
+  test('a rendered namespace for one owner is never authorized for a neighbour', () => {
+    for (const owner of ['ab', 'abc', 'a-b', 'alice']) {
+      const ns = repoNamespace(owner, 'memlawb')
+      expect(authorizeNamespace(id(owner), ns)).toBe(true)
+      for (const other of ['ab', 'abc', 'a-b', 'alice']) {
+        if (other === owner) continue
+        expect(`${other} -> ${ns}: ${authorizeNamespace(id(other), ns)}`).toBe(
+          `${other} -> ${ns}: false`,
+        )
+      }
+    }
+  })
+})
+
+/** Pull the pasted JSON block back out of the card, so it can be parsed. */
+function configBlock(card: string): unknown {
+  const start = card.indexOf('{')
+  const end = card.lastIndexOf('}')
+  return JSON.parse(card.slice(start, end + 1))
+}
+
+describe('setup card — the pasted block (R16)', () => {
+  test('the block is valid JSON in the documented MCP shape', () => {
+    const card = renderSetupCard('openclaude', { owner: 'alice', url: HOSTED, apiKey: KEY })
+    expect(configBlock(card)).toEqual({
+      mcpServers: {
+        memlawb: {
+          command: 'bunx',
+          args: ['-y', '@gitlawb/memlawb', 'mcp'],
+          env: {
+            MEMLAWB_URL: HOSTED,
+            MEMLAWB_API_KEY: KEY,
+            MEMLAWB_PASSPHRASE: '<paste your passphrase here>',
+            MEMLAWB_NAMESPACE: 'user:alice',
+            MEMLAWB_SCAN: 'block',
+          },
+        },
+      },
+    })
+  })
+
+  test('both consumers get the same block', () => {
+    const input = { owner: 'alice', url: HOSTED, apiKey: KEY }
+    expect(configBlock(renderSetupCard('zero', input))).toEqual(
+      configBlock(renderSetupCard('openclaude', input)),
+    )
+  })
+
+  test('the env keys are exactly the ones the MCP server reads', () => {
+    const src = readFileSync(new URL('../src/mcp/server.ts', import.meta.url), 'utf8')
+    const card = renderSetupCard('zero', { owner: 'alice', url: HOSTED, apiKey: KEY })
+    const env = (configBlock(card) as { mcpServers: { memlawb: { env: Record<string, string> } } })
+      .mcpServers.memlawb.env
+    for (const key of Object.keys(env))
+      expect(`${key} read by server: ${src.includes(`'${key}'`)}`).toBe(
+        `${key} read by server: true`,
+      )
+  })
+})
+
+describe('setup card — the passphrase is not an input (AE10, R20)', () => {
+  test('the render function has no passphrase parameter', () => {
+    const card = renderSetupCard('openclaude', {
+      owner: 'alice',
+      url: HOSTED,
+      apiKey: KEY,
+      // @ts-expect-error the card must never accept a passphrase: that is the
+      // mechanism keeping it off the wire when the console renders the card.
+      passphrase: 'correct-horse-battery-staple',
+    })
+    // And nothing resembling it reaches the output at runtime either.
+    expect(card).not.toContain('correct-horse-battery-staple')
+  })
+
+  test('the rendered block carries a placeholder, never a generated secret', () => {
+    const card = renderSetupCard('zero', { owner: 'alice', url: HOSTED, apiKey: KEY })
+    expect(card).toContain('"MEMLAWB_PASSPHRASE": "<paste your passphrase here>"')
+    expect(card).toContain(KEY)
+  })
+})
+
+/**
+ * Structural proof that the module cannot transmit anything: it must import
+ * nothing at all, and it must name no network capability. Fail-closed on the
+ * module system (any surviving import/require token is a violation) rather
+ * than enumerating the ways a network reach could be spelled.
+ */
+function networkRisks(src: string): string[] {
+  const out: string[] = []
+  for (const m of src.matchAll(/\b(import|require)\b/g)) {
+    // Comments and prose mention neither in this module; treat every hit as a
+    // module-system reference rather than trying to parse around them.
+    out.push(`module-system reference: ${m[1]}`)
+  }
+  for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'sendBeacon', 'EventSource']) {
+    if (new RegExp(`\\b${name}\\b`).test(src)) out.push(`network capability: ${name}`)
+  }
+  return out
+}
+
+describe('setup card — the module makes no network call (AE10)', () => {
+  test('client/setup.ts references no module system and no network capability', () => {
+    const src = readFileSync(new URL('../client/setup.ts', import.meta.url), 'utf8')
+    expect(src.length).toBeGreaterThan(500)
+    expect(networkRisks(src)).toEqual([])
+  })
+
+  test('positive control: an import is reported', () => {
+    expect(networkRisks("import { x } from './y.ts'\n")).toEqual([
+      'module-system reference: import',
+    ])
+  })
+
+  test('positive control: a dynamic import is reported', () => {
+    expect(networkRisks("await import('./y.ts')\n")).toEqual(['module-system reference: import'])
+  })
+
+  test('positive control: a require is reported', () => {
+    expect(networkRisks("const y = require('./y.ts')\n")).toEqual([
+      'module-system reference: require',
+    ])
+  })
+
+  test('positive control: each network capability is reported by name', () => {
+    expect(networkRisks('await fetch(url)\n')).toEqual(['network capability: fetch'])
+    expect(networkRisks('new XMLHttpRequest()\n')).toEqual(['network capability: XMLHttpRequest'])
+    expect(networkRisks('new WebSocket(url)\n')).toEqual(['network capability: WebSocket'])
+    expect(networkRisks('navigator.sendBeacon(url, body)\n')).toEqual([
+      'network capability: sendBeacon',
+    ])
+    expect(networkRisks('new EventSource(url)\n')).toEqual(['network capability: EventSource'])
+  })
+
+  test('negative control: ordinary code is not reported', () => {
+    const ordinary = [
+      'export const pick = (a: string[]) => a[0]\n',
+      'const bytes = new Uint8Array(32)\ncrypto.getRandomValues(bytes)\n',
+      'export const url = new URL("https://example.com")\n',
+      'const parts = ["a", "b"].join("\\n")\n',
+    ]
+    for (const src of ordinary)
+      expect(`${src.slice(0, 20)} :: ${networkRisks(src)}`).toBe(`${src.slice(0, 20)} :: `)
+  })
+})
+
+describe('setup card — passphrase entropy (AE10, R20)', () => {
+  test('the alphabet and length give at least 128 bits', () => {
+    const bits = PASSPHRASE_LENGTH * Math.log2(PASSPHRASE_ALPHABET.length)
+    expect(bits).toBeGreaterThanOrEqual(128)
+    // The declared alphabet has no duplicate characters, or the bits above
+    // overstate what a draw actually carries.
+    expect(new Set(PASSPHRASE_ALPHABET).size).toBe(PASSPHRASE_ALPHABET.length)
+  })
+
+  test('a generated passphrase matches the declared alphabet and length', () => {
+    const p = generatePassphrase()
+    expect(p.length).toBe(PASSPHRASE_LENGTH)
+    for (const ch of p)
+      expect(`${ch} in alphabet: ${PASSPHRASE_ALPHABET.includes(ch)}`).toBe(
+        `${ch} in alphabet: true`,
+      )
+  })
+
+  test('generation uses the whole declared alphabet, so the bits are real', () => {
+    // A generator drawing from a subset would still pass the charset check
+    // above while carrying far fewer bits than PASSPHRASE_LENGTH * log2(n).
+    const seen = new Set<string>()
+    for (let i = 0; i < 300; i++) for (const ch of generatePassphrase()) seen.add(ch)
+    expect(seen.size).toBe(PASSPHRASE_ALPHABET.length)
+  })
+
+  test('two generations differ', () => {
+    const runs = new Set(Array.from({ length: 50 }, () => generatePassphrase()))
+    expect(runs.size).toBe(50)
+  })
+})
+
+describe('setup card — URL rule (R23)', () => {
+  test('https is accepted', () => {
+    expect(assertServiceUrl('https://memory.gitlawb.com')).toBe('https://memory.gitlawb.com')
+    expect(renderSetupCard('openclaude', { owner: 'a', url: HOSTED, apiKey: KEY })).toContain(
+      HOSTED,
+    )
+  })
+
+  test('http to a non-loopback host is refused', () => {
+    expect(() => assertServiceUrl('http://memory.gitlawb.com')).toThrow(/https/)
+    expect(() =>
+      renderSetupCard('openclaude', { owner: 'a', url: 'http://memory.gitlawb.com', apiKey: KEY }),
+    ).toThrow(/https/)
+  })
+
+  test('http to loopback is accepted', () => {
+    for (const url of [
+      'http://localhost:8080',
+      'http://127.0.0.1:8080',
+      'http://127.1.2.3:8080',
+      'http://[::1]:8080',
+    ])
+      expect(`${url} -> ${assertServiceUrl(url)}`).toBe(`${url} -> ${url}`)
+  })
+
+  test('near-loopback hosts are refused', () => {
+    for (const url of [
+      'http://localhost.attacker.com',
+      'http://127.0.0.1.attacker.com',
+      'http://128.0.0.1',
+      'http://169.254.169.254',
+      'http://0.0.0.0',
+      'http://[::2]',
+    ])
+      expect(() => assertServiceUrl(url)).toThrow()
+  })
+
+  test('anything that is not http(s) is refused, and so is a non-URL', () => {
+    for (const url of [
+      'ftp://localhost/x',
+      'file:///etc/passwd',
+      'ws://localhost',
+      'not a url',
+      '',
+    ])
+      expect(() => assertServiceUrl(url)).toThrow()
+  })
+})

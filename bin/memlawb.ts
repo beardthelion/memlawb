@@ -6,6 +6,7 @@
  * Usage:
  *   memlawb push <dir> <namespace>     encrypt + upload changed entries
  *   memlawb pull <dir> <namespace>     download + decrypt into <dir>
+ *   memlawb setup <owner> [url]        print the config block + a new passphrase
  *   memlawb serve                      run the server (same as `bun run src/index.ts`)
  *
  * Env (client commands):
@@ -18,6 +19,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, sep } from 'node:path'
 import { MemlawbClient } from '../client/index.ts'
 import type { ScanMode } from '../client/secretscan.ts'
+import { generatePassphrase, renderSetupCard } from '../client/setup.ts'
 
 async function walkMd(dir: string): Promise<string[]> {
   const out: string[] = []
@@ -69,6 +71,21 @@ async function cmdPull(dir: string, namespace: string) {
   console.log(`pulled ${namespace} v${r.version}: ${n} files → ${dir}`)
 }
 
+/**
+ * Print the paste-in block plus a freshly generated passphrase. The passphrase
+ * is produced here, on this machine, and shown once: nothing sends it anywhere
+ * and nothing can recover it, so the warning is the feature.
+ */
+function cmdSetup(owner: string, url: string | undefined) {
+  const card = renderSetupCard('openclaude', {
+    owner,
+    url: url ?? process.env.MEMLAWB_URL ?? 'https://memory.gitlawb.com',
+    apiKey: process.env.MEMLAWB_API_KEY ?? '<paste your service key here>',
+  })
+  console.log(card)
+  console.log(`Your new passphrase (shown once, back it up now):\n\n  ${generatePassphrase()}\n`)
+}
+
 const [cmd, a, b] = process.argv.slice(2)
 try {
   switch (cmd) {
@@ -79,6 +96,10 @@ try {
     case 'pull':
       if (!a || !b) usage()
       await cmdPull(a, b)
+      break
+    case 'setup':
+      if (!a) usage()
+      cmdSetup(a, b)
       break
     case 'mcp':
       // Stdio MCP server. Imported lazily so push/pull/serve don't pay for it.
@@ -102,6 +123,7 @@ function usage(): never {
     'usage:\n' +
       '  memlawb push <dir> <namespace>   encrypt + upload changed entries\n' +
       '  memlawb pull <dir> <namespace>   download + decrypt into <dir>\n' +
+      '  memlawb setup <owner> [url]      print the paste-in config block + a passphrase\n' +
       '  memlawb mcp                      run the stdio MCP server (memory tools)\n' +
       '  memlawb serve                    run the memlawb server',
   )
