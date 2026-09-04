@@ -227,6 +227,70 @@ describe('denial rendering', () => {
     expect(r.text).toContain(`sha256:${'c'.repeat(64)}`)
   })
 
+  test('a namespace the server cannot serve does not read as empty memory', async () => {
+    // The fifth instance of this branch's recurring shape, and the one a model
+    // acts on hardest: told its memory does not exist, it will happily save
+    // over a namespace whose entries are merely unservable. A namespace never
+    // written answers 404 empty at version 0; one whose manifest names entries
+    // the store has lost answers 200 at a later version with nothing in it.
+    //
+    // Only the tools that read BODIES are blind to this. `list` reads the
+    // manifest, so it still names the keys, which is the honest answer and is
+    // asserted here so the fix is not applied where it does not belong.
+    const drifted = {
+      pull: async () => ({ namespace: 'user:d', version: 7, entries: {} }),
+      hashes: async () => ({ 'a.md': `sha256:${'a'.repeat(64)}` }),
+      entry: async () => 'x',
+      push: async () => ({
+        namespace: 'user:d',
+        version: 7,
+        uploaded: [],
+        unchanged: [],
+        deleted: [],
+      }),
+      delete: async () => {},
+    }
+    const t = makeTools(drifted as unknown as Parameters<typeof makeTools>[0], 'user:d')
+    for (const r of [await t.recall('anything'), await t.search('anything')]) {
+      expect(r.isError).toBe(true)
+      expect(r.text).not.toMatch(/no memory stored|no matches/i)
+      expect(r.text).toMatch(/could not serve|cannot serve/i)
+    }
+    expect((await t.list()).text).toContain('a.md')
+
+    // Control: a genuinely empty namespace still reads as empty, so this
+    // distinguishes the two rather than calling every empty read a failure.
+    const fresh = {
+      pull: async () => ({ namespace: 'user:f', version: 0, entries: {} }),
+      hashes: async () => ({}),
+      entry: async () => 'x',
+      push: async () => ({
+        namespace: 'user:f',
+        version: 0,
+        uploaded: [],
+        unchanged: [],
+        deleted: [],
+      }),
+      delete: async () => {},
+    }
+    const f = makeTools(fresh as unknown as Parameters<typeof makeTools>[0], 'user:f')
+    const fr = await f.recall('anything')
+    expect(fr.isError).toBeUndefined()
+    expect(fr.text).toMatch(/no memory stored/i)
+  })
+
+  test('an unrecognized failure does not put an unbounded server body in the text', async () => {
+    // The untyped fallback renders `(e as Error).message`, and an HTTP error's
+    // message embeds the response body. Nothing bounded what a hostile or
+    // broken server could put into a model's context through that path.
+    const huge = new Error(`boom ${'A'.repeat(5000)}`)
+    const r = await toolsWith(huge).save('k.md', 'body')
+    expect(r.isError).toBe(true)
+    expect(r.text.length).toBeLessThan(600)
+    // Control: it still says something useful rather than swallowing the error.
+    expect(r.text).toMatch(/boom/)
+  })
+
   test('the authorized prefix is the owner root, not the configured namespace', async () => {
     // The guide and the setup card both tell a developer to run one namespace
     // per codebase, which is user:<owner>/<repo>, so the configured default is

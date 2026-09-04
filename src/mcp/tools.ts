@@ -34,6 +34,19 @@ export type MemoryClient = {
 /** Entry order by key. Not the default sort, which compares "key,value" pairs. */
 const byKey = ([a]: [string, unknown], [b]: [string, unknown]) => (a < b ? -1 : 1)
 
+/**
+ * What an unrecognized failure is allowed to put into a model's context.
+ *
+ * The fallback renders the error's message, and an HTTP error's message embeds
+ * the response body, so a broken or hostile server could otherwise write
+ * unbounded text straight into the conversation.
+ */
+function bounded(message: string, max = 300): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point.
+  const clean = message.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()
+  return clean.length > max ? `${clean.slice(0, max)}...` : clean
+}
+
 const ok = (text: string): ToolResult => ({ text })
 const fail = (text: string): ToolResult => ({ text, isError: true })
 
@@ -162,6 +175,26 @@ function skippedText(key: string, namespace: string, reason: string): string {
   return `${head} Retrying the same request cannot succeed, so tell the user memory writes to ${namespace} are failing.`
 }
 
+/**
+ * A namespace that answers with no entries at a version past zero.
+ *
+ * The server drops any entry whose stored body is missing from the full read,
+ * so a namespace whose blobs are gone reads exactly like one that was never
+ * written. Reporting that as "no memory yet" tells a model its memory does not
+ * exist, and a model told that will save over it. A namespace that genuinely
+ * has nothing is still at version 0, which is how the two are told apart.
+ *
+ * `list` is deliberately not routed through this: it reads the manifest, so it
+ * still names the keys, which is the true answer there.
+ */
+function unservable(ns: string, version: number): string {
+  return (
+    `${ns} is not empty, but the server could not serve any of its entries (version ${version}). ` +
+    'This is server-side data loss, not an empty namespace, so do not treat it as a fresh start and ' +
+    'do not save over it. Tell the user their stored memory is unreadable and needs restoring.'
+  )
+}
+
 function snippet(content: string, max = 200): string {
   const oneLine = content.replace(/\s+/g, ' ').trim()
   return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine
@@ -192,7 +225,7 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
           )
         }
         const d = denial(`Saving "${key}"`, ns, defaultNamespace, 'Nothing was stored.', e)
-        return fail(d ?? `save failed: ${(e as Error).message}`)
+        return fail(d ?? `save failed: ${bounded((e as Error).message)}`)
       }
     },
 
@@ -200,8 +233,11 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
     async recall(query: string, namespace?: string, limit = 5): Promise<ToolResult> {
       const ns = nsOf(namespace)
       try {
-        const { entries } = await client.pull(ns)
-        if (Object.keys(entries).length === 0) return ok(`(no memory stored in ${ns} yet)`)
+        const { entries, version } = await client.pull(ns)
+        if (Object.keys(entries).length === 0) {
+          if (version > 0) return fail(unservable(ns, version))
+          return ok(`(no memory stored in ${ns} yet)`)
+        }
         const ranked = rankMemories(query, entries, limit)
         if (ranked.length === 0) return ok(`(nothing in ${ns} looks relevant to "${query}")`)
         const body = ranked.map(r => `### ${r.key}\n${r.content.trim()}`).join('\n\n')
@@ -210,7 +246,7 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
         )
       } catch (e) {
         const d = denial('Recalling memories', ns, defaultNamespace, 'No memories were read.', e)
-        return fail(d ?? `recall failed: ${(e as Error).message}`)
+        return fail(d ?? `recall failed: ${bounded((e as Error).message)}`)
       }
     },
 
@@ -219,7 +255,8 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
       const ns = nsOf(namespace)
       const needle = query.toLowerCase()
       try {
-        const { entries } = await client.pull(ns)
+        const { entries, version } = await client.pull(ns)
+        if (Object.keys(entries).length === 0 && version > 0) return fail(unservable(ns, version))
         const hits = Object.entries(entries).filter(
           ([key, content]) =>
             key.toLowerCase().includes(needle) || content.toLowerCase().includes(needle),
@@ -229,7 +266,7 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
         return ok(`${hits.length} match(es) for "${query}" in ${ns}:\n${body}`)
       } catch (e) {
         const d = denial('Searching memories', ns, defaultNamespace, 'No memories were read.', e)
-        return fail(d ?? `search failed: ${(e as Error).message}`)
+        return fail(d ?? `search failed: ${bounded((e as Error).message)}`)
       }
     },
 
@@ -245,7 +282,7 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
         )
       } catch (e) {
         const d = denial('Listing entries', ns, defaultNamespace, 'No entry keys were read.', e)
-        return fail(d ?? `list failed: ${(e as Error).message}`)
+        return fail(d ?? `list failed: ${bounded((e as Error).message)}`)
       }
     },
 
@@ -257,7 +294,7 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
         return ok(`deleted "${key}" from ${ns}`)
       } catch (e) {
         const d = denial(`Deleting "${key}"`, ns, defaultNamespace, `"${key}" is still stored.`, e)
-        return fail(d ?? `delete failed: ${(e as Error).message}`)
+        return fail(d ?? `delete failed: ${bounded((e as Error).message)}`)
       }
     },
   }

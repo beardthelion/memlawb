@@ -7,11 +7,15 @@
  * structurally cannot -- a change that is correct in `memory.ts` and wrong once
  * ciphertext, the wire format and the storage layout have to agree.
  *
- * The shipped client sends no `base` and reads neither `supports` nor
- * `erasure`, because the client half of that work is a later phase. That is
- * exactly why the compatibility cases below matter: they are the evidence that
- * a client which has not adopted the new contract still works against a server
- * that has, which nothing else in the suite proves.
+ * The client has since adopted the write precondition, so the compatibility
+ * cases below are no longer describing today's client. They are kept, and are
+ * worth more now than when they were written: they are the evidence that a
+ * client which has NOT adopted the contract still works against a server that
+ * has, which is exactly the deployment a published package creates and which
+ * nothing else in the suite covers.
+ *
+ * The service surfaces this phase added (the pasted card, the startup
+ * preflight, and the tool text a model reads) are driven in e2e-service.test.ts.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
