@@ -71,9 +71,16 @@ export function ownerNamespace(owner: string): string {
  * One memory set per codebase, beneath the owner's subtree. One namespace for
  * everything mixes every project into a single recall corpus, which is the
  * fastest way to make recall useless for the developer this is built for.
+ *
+ * The form is `user:<owner>/<repo>`, the same one skills/memlawb-memory/SKILL.md
+ * gives the model. These two surfaces once disagreed (the card said
+ * `user:<owner>/repo/<repo>`), which put the same repository's memory in two
+ * subtrees and made recall come back empty with no error anywhere. The test in
+ * tests/setup-card.test.ts reads the form out of the guide rather than
+ * restating it, so they cannot drift apart again.
  */
 export function repoNamespace(owner: string, repo: string): string {
-  return `user:${owner}/repo/${repo}`
+  return `user:${owner}/${repo}`
 }
 
 const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/

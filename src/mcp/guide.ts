@@ -17,7 +17,9 @@ import { fileURLToPath } from 'node:url'
  * Served only when SKILL.md can't be read. Exported so tests can prove the
  * loaded guide is the FILE and not this: the routing rule lives in both, so
  * every rule assertion would pass on the fallback and a broken path
- * resolution would ship unnoticed without that control.
+ * resolution would ship unnoticed without that control. The wording here is
+ * deliberately not SKILL.md's, so the markers that control depends on stay
+ * absent from this text.
  */
 export const FALLBACK = `# memlawb memory
 
@@ -34,7 +36,8 @@ You have durable, end-to-end-encrypted memory via the memlawb MCP tools.
   \`memory_delete\` facts that are wrong or stale; keep a \`MEMORY.md\` index.
 - **Route by what the fact is.** memlawb takes durable facts that must survive
   across machines, the host agent's local memdir keeps the session log, and
-  repo-shared facts belong in team memory.
+  repo-shared facts belong in team memory. If a fact fits two, ask who needs
+  it: you on every machine, this session only, or everyone on the repository.
 
 Tools: memory_save(key, content) · memory_recall(query, limit?) ·
 memory_search(query) · memory_list() · memory_delete(key).`
@@ -65,6 +68,8 @@ export const SHORT_INSTRUCTIONS =
   'work), persist it with memory_save; skip transient context and never save ' +
   'secrets. Route by what the fact is: memlawb takes durable facts that must ' +
   "survive across machines, the host agent's local memdir keeps the session " +
-  'log, and repo-shared facts belong in team memory. ' +
+  'log, and repo-shared facts belong in team memory. If a fact fits two, ask ' +
+  'who needs it: you on every machine, this session only, or everyone on the ' +
+  'repository. ' +
   'Search before adding to avoid duplicates. Call the "memory_guide" ' +
   'prompt for the full protocol.'

@@ -60,6 +60,23 @@ describe('memory routing rule', () => {
     expect(sentence).toContain('team memory')
   })
 
+  // The three clauses above only name the categories. What resolves the case
+  // this feature exists for is the tie-breaker, and it used to live in SKILL.md
+  // alone: the full guide reaches the model only if it chooses to call the
+  // memory_guide prompt, and nothing forces it. SHORT_INSTRUCTIONS is in
+  // context on every session, so a model that never calls the prompt was left
+  // with three categories and no way to pick between two of them.
+  const TIE_BREAKER =
+    'ask who needs it: you on every machine, this session only, or everyone on the repository'
+
+  test('the short instructions carry the tie-breaker, not just the categories', () => {
+    expect(flat(SHORT_INSTRUCTIONS)).toContain(TIE_BREAKER)
+  })
+
+  test('the fallback carries the tie-breaker too', () => {
+    expect(flat(FALLBACK)).toContain(TIE_BREAKER)
+  })
+
   test('the fallback carries the rule too, so a failed read still routes', () => {
     const f = flat(FALLBACK)
     expect(f).toContain('durable facts that must survive across machines')

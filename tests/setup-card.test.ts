@@ -13,6 +13,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import {
   assertServiceUrl,
   generatePassphrase,
@@ -23,6 +24,7 @@ import {
   repoNamespace,
 } from '../client/setup.ts'
 import { authorizeNamespace } from '../src/auth.ts'
+import { loadMemoryGuide } from '../src/mcp/guide.ts'
 
 const id = (owner: string) => ({ owner })
 const HOSTED = 'https://memory.gitlawb.com'
@@ -292,5 +294,122 @@ describe('setup card — URL rule (R23)', () => {
       '',
     ])
       expect(() => assertServiceUrl(url)).toThrow()
+  })
+})
+
+/**
+ * The guide and the card are two onboarding surfaces for the same decision, and
+ * they drifted once already: the guide told the model `user:<owner>/<repo>`
+ * while the card told the operator `user:<owner>/repo/<repo>`, so the same
+ * repository's memory landed in two subtrees and recall found nothing in
+ * whichever one was not used, with no error anywhere. This pins them together
+ * by reading the form out of the guide text rather than restating it here, so
+ * changing either side alone turns it red.
+ */
+function documentedRepoNamespace(guide: string): string {
+  const forms = [...guide.matchAll(/`(user:<owner>[^`]*)`/g)].map(m => m[1])
+  const withRepo = forms.filter(f => f.includes('<repo>'))
+  if (withRepo.length !== 1)
+    throw new Error(`guide documents ${withRepo.length} per-repo namespace forms: ${forms}`)
+  return withRepo[0]
+}
+
+describe('setup card — the guide and the card agree on the namespace form', () => {
+  test('the card renders exactly the per-repository form the guide documents', () => {
+    const template = documentedRepoNamespace(loadMemoryGuide())
+    const expected = template.replace('<owner>', 'alice').replace('<repo>', 'memlawb')
+    expect(repoNamespace('alice', 'memlawb')).toBe(expected)
+    // And the operator-facing prose carries the same string the model is told.
+    expect(
+      renderSetupCard('openclaude', {
+        owner: 'alice',
+        url: HOSTED,
+        apiKey: KEY,
+        repo: 'memlawb',
+      }),
+    ).toContain(expected)
+  })
+})
+
+/**
+ * `memlawb setup` end to end. The pure functions above are well covered, but
+ * cmdSetup is where they are wired together, and the wiring is what carries the
+ * property that matters: the passphrase is generated here, printed once,
+ * separately, and is never an input to the render function, so it cannot reach
+ * the pasted block. Spawning the real CLI is the only way to see the two
+ * outputs as a user does.
+ */
+const CLI = fileURLToPath(new URL('../bin/memlawb.ts', import.meta.url))
+
+/** A clean env, so ambient MEMLAWB_* vars cannot change what the CLI prints. */
+function runCli(args: string[]) {
+  const r = Bun.spawnSync(['bun', 'run', CLI, ...args], {
+    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  return {
+    code: r.exitCode,
+    stdout: new TextDecoder().decode(r.stdout),
+    stderr: new TextDecoder().decode(r.stderr),
+  }
+}
+
+describe('memlawb setup (CLI)', () => {
+  test('prints the pasted block for the named owner and url', () => {
+    const r = runCli(['setup', 'alice', HOSTED])
+    expect(`exit ${r.code}: ${r.stderr}`).toBe('exit 0: ')
+    expect(configBlock(r.stdout)).toEqual({
+      mcpServers: {
+        memlawb: {
+          command: 'bunx',
+          args: ['-y', '@gitlawb/memlawb', 'mcp'],
+          env: {
+            MEMLAWB_URL: HOSTED,
+            MEMLAWB_API_KEY: '<paste your service key here>',
+            MEMLAWB_PASSPHRASE: '<paste your passphrase here>',
+            MEMLAWB_NAMESPACE: 'user:alice',
+            MEMLAWB_SCAN: 'block',
+          },
+        },
+      },
+    })
+    // The per-repository convention the guide gives the model, in the prose.
+    expect(r.stdout).toContain(repoNamespace('alice', 'my-repo'))
+  })
+
+  test('the printed passphrase is shown once and is not in the pasted block', () => {
+    const r = runCli(['setup', 'alice', HOSTED])
+    const m = /passphrase \(shown once, back it up now\):\s+(\S+)/.exec(r.stdout)
+    expect(m).not.toBeNull()
+    const pass = (m as RegExpExecArray)[1]
+    expect(pass.length).toBe(PASSPHRASE_LENGTH)
+    for (const ch of pass)
+      expect(`${ch} in alphabet: ${PASSPHRASE_ALPHABET.includes(ch)}`).toBe(
+        `${ch} in alphabet: true`,
+      )
+    // The block keeps the placeholder: the generated value is printed beside
+    // the card, never rendered into it.
+    const env = (
+      configBlock(r.stdout) as {
+        mcpServers: { memlawb: { env: Record<string, string> } }
+      }
+    ).mcpServers.memlawb.env
+    expect(env.MEMLAWB_PASSPHRASE).toBe('<paste your passphrase here>')
+    expect(r.stdout.slice(0, r.stdout.lastIndexOf('}'))).not.toContain(pass)
+  })
+
+  test('a run with no owner fails instead of rendering a namespace', () => {
+    const r = runCli(['setup'])
+    expect(r.code).not.toBe(0)
+    expect(r.stdout).toContain('memlawb setup <owner> [url]')
+    expect(r.stdout).not.toContain('mcpServers')
+  })
+
+  test('a refused url fails rather than printing a card', () => {
+    const r = runCli(['setup', 'alice', 'http://memory.gitlawb.com'])
+    expect(r.code).not.toBe(0)
+    expect(r.stderr).toContain('https')
+    expect(r.stdout).not.toContain('mcpServers')
   })
 })
