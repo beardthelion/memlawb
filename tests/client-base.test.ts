@@ -19,10 +19,20 @@ let base: string
 let MemlawbClient: typeof import('../client/index.ts').MemlawbClient
 let MemlawbHttpError: typeof import('../client/index.ts').MemlawbHttpError
 let MemlawbDecryptError: typeof import('../client/index.ts').MemlawbDecryptError
+let MemlawbTimeoutError: typeof import('../client/index.ts').MemlawbTimeoutError
+let DEFAULT_TIMEOUT_MS: number
+let MAX_TRACKED_NAMESPACES: number
 
 beforeAll(async () => {
   const { handleRequest } = await import('../src/handler.ts')
-  ;({ MemlawbClient, MemlawbHttpError, MemlawbDecryptError } = await import('../client/index.ts'))
+  ;({
+    MemlawbClient,
+    MemlawbHttpError,
+    MemlawbDecryptError,
+    MemlawbTimeoutError,
+    DEFAULT_TIMEOUT_MS,
+    MAX_TRACKED_NAMESPACES,
+  } = await import('../client/index.ts'))
   server = Bun.serve({ port: 0, fetch: handleRequest })
   base = `http://localhost:${server.port}`
 })
@@ -504,5 +514,337 @@ describe('typed decrypt failure', () => {
     s.stop(true)
     expect(err).not.toBeInstanceOf(MemlawbDecryptError)
     expect(err).toBeInstanceOf(MemlawbHttpError)
+  })
+})
+
+// ─── Bounded waits ──────────────────────────────────────────────────────
+//
+// A server that completes the TCP handshake and then never answers used to
+// hang the caller forever, on every one of the five fetch call sites. The MCP
+// server feels it worst: its startup preflight blocks on two of them before it
+// serves anything, so the subprocess sits there with no output and no exit,
+// which is worse than any refusal it could have printed.
+
+/**
+ * A server that answers GET with a valid hashes view and stalls on everything
+ * else, so a stall can be aimed at the PUT/DELETE half of a flow whose earlier
+ * GET has to succeed for the call to reach it.
+ */
+function stallingServer(stall: (req: Request) => boolean) {
+  return Bun.serve({
+    port: 0,
+    // Bun.serve otherwise closes an idle request after 10s, which would end the
+    // wait for the client and leave the test unable to tell a client-side
+    // timeout from a server-side one.
+    idleTimeout: 0,
+    fetch: req =>
+      stall(req)
+        ? new Promise<Response>(() => {})
+        : new Response(JSON.stringify({ version: 1, entryChecksums: {}, supports: [] }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+  })
+}
+
+describe('bounded waits', () => {
+  test('every call site gives up on a server that never answers, and none fires against a working one', async () => {
+    const all = stallingServer(() => true)
+    const writes = stallingServer(req => req.method !== 'GET')
+    const stalled = (port: number | undefined) =>
+      new MemlawbClient({ url: `http://localhost:${port}`, passphrase: 'pw', timeoutMs: 500 })
+
+    const timedOut = async (label: string, run: () => Promise<unknown>) => {
+      const t0 = Date.now()
+      const err = await run().catch(e => e)
+      return { label, err, elapsed: Date.now() - t0 }
+    }
+
+    const c1 = stalled(all.port)
+    const c2 = stalled(all.port)
+    const c3 = stalled(writes.port)
+    const c4 = stalled(writes.port)
+    const c5 = stalled(writes.port)
+    // c4 has to enumerate first, or its delete takes the DELETE path (c5's)
+    // rather than the assert-absence PUT.
+    await c4.hashes('user:tmo')
+
+    const results = [
+      await timedOut('hashes', () => c1.hashes('user:tmo')),
+      await timedOut('pull', () => c2.pull('user:tmo')),
+      await timedOut('push', () => c3.push('user:tmo', { 'a.md': 'x' })),
+      await timedOut('delete-via-put', () => c4.delete('user:tmo', 'gone.md')),
+      await timedOut('delete', () => c5.delete('user:tmo', 'a.md')),
+    ]
+    all.stop(true)
+    writes.stop(true)
+
+    for (const { label, err, elapsed } of results) {
+      expect(`${label}: ${(err as Error)?.name}`).toBe(`${label}: MemlawbTimeoutError`)
+      expect(err).toBeInstanceOf(MemlawbTimeoutError)
+      expect((err as InstanceType<typeof MemlawbTimeoutError>).timeoutMs).toBe(500)
+      expect((err as InstanceType<typeof MemlawbTimeoutError>).namespace).toBe('user:tmo')
+      // Bounded wall clock, not "eventually": a client that hung until bun's
+      // own test timeout killed it would otherwise look the same.
+      expect(`${label}: ${elapsed < 5000}`).toBe(`${label}: true`)
+    }
+
+    // Positive control, same knob against a server that does answer. Without
+    // it, a client that refused every request would pass everything above.
+    const ok = new MemlawbClient({ url: base, passphrase: 'pw', timeoutMs: 500 })
+    const ns = 'user:cb-tmo-control'
+    await ok.push(ns, { 'a.md': 'v1' })
+    expect((await ok.pull(ns)).entries['a.md']).toBe('v1')
+    expect(Object.keys(await ok.hashes(ns))).toEqual(['a.md'])
+    await ok.delete(ns, 'a.md')
+    expect(await ok.hashes(ns)).toEqual({})
+  }, 15000)
+
+  test('a server that sends a status and then stalls mid-body times out too', async () => {
+    // The abort covers the body, not only the headers, so this is a separate
+    // path from the test above: the fetch has already resolved and the wait
+    // is inside the body read. Without it being mapped there, a stalled
+    // transfer surfaces as a bare DOMException from a JSON parse instead of
+    // the typed timeout, which is the one thing the class exists to prevent.
+    const s = Bun.serve({
+      port: 0,
+      idleTimeout: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream({
+            start: c => c.enqueue(new TextEncoder().encode('{"version":1,"content":')),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+    })
+    const c = new MemlawbClient({
+      url: `http://localhost:${s.port}`,
+      passphrase: 'pw',
+      timeoutMs: 500,
+    })
+    const t0 = Date.now()
+    const err = await c.pull('user:tmo-body').catch(e => e)
+    s.stop(true)
+    expect((err as Error)?.name).toBe('MemlawbTimeoutError')
+    expect(err).toBeInstanceOf(MemlawbTimeoutError)
+    expect(Date.now() - t0).toBeLessThan(5000)
+  }, 15000)
+
+  test('a client that was given no timeout still has a bounded one', () => {
+    const c = client() as unknown as { timeoutMs: number }
+    expect(c.timeoutMs).toBe(DEFAULT_TIMEOUT_MS)
+    expect(Number.isFinite(DEFAULT_TIMEOUT_MS)).toBe(true)
+    // Large enough that a slow-but-working transfer of a full namespace
+    // survives it; see the comment on the constant.
+    expect(DEFAULT_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000)
+  })
+})
+
+// ─── Bounded per-namespace caches ───────────────────────────────────────
+//
+// Both maps key on a namespace string that every MCP tool takes as a
+// model-supplied argument, in a process that lives as long as the agent
+// session, so an unbounded map is a model-driven leak. keyCache additionally
+// holds derived key material, which is worth keeping resident only while it is
+// being used.
+
+describe('bounded per-namespace caches', () => {
+  test('the observed map evicts the oldest namespace and leaves a recent one armed', async () => {
+    const a = client()
+    const b = client()
+    const evicted = 'user:cb-lru-evicted'
+    const kept = 'user:cb-lru-kept'
+
+    // Enumerated-empty: a later write may assert the key absent.
+    expect(await a.hashes(evicted)).toEqual({})
+    for (let i = 0; i < MAX_TRACKED_NAMESPACES; i++) await a.hashes(`user:cb-lru-f${i}`)
+    expect(await a.hashes(kept)).toEqual({})
+
+    // The evicted namespace: a lost entry costs the guarantee, not
+    // correctness. The write goes unconditional, exactly as a first write
+    // into a never-read namespace already does.
+    await b.push(evicted, { 'k.md': 'from-b' })
+    await a.push(evicted, { 'k.md': 'from-a' })
+    expect((await b.pull(evicted)).entries['k.md']).toBe('from-a')
+
+    // The still-resident one is untouched: a cache that evicted on every
+    // insert would pass the half above and lose this.
+    await b.push(kept, { 'k.md': 'from-b' })
+    const err = await a.push(kept, { 'k.md': 'from-a' }).catch(e => e)
+    expect(err).toBeInstanceOf(MemlawbHttpError)
+    expect((err as InstanceType<typeof MemlawbHttpError>).code).toBe('stale_base_version')
+    expect((await b.pull(kept)).entries['k.md']).toBe('from-b')
+  }, 30000)
+
+  test('the key cache is bounded, and eviction only costs a re-derivation', () => {
+    const c = client() as unknown as {
+      keyCache: Map<string, Buffer>
+      key(namespace: string): Buffer
+    }
+    const evicted = 'user:cb-key-evicted'
+    const kept = 'user:cb-key-kept'
+
+    const first = c.key(evicted)
+    for (let i = 0; i < MAX_TRACKED_NAMESPACES; i++) c.key(`user:cb-key-f${i}`)
+    const keptFirst = c.key(kept)
+
+    expect(c.keyCache.size).toBeLessThanOrEqual(MAX_TRACKED_NAMESPACES)
+    // Still resident across a later insert: the same Buffer instance comes
+    // back, so nothing was re-derived. The later insert is the load-bearing
+    // half. Reading `kept` straight back would survive even a cache that
+    // evicts on every insert, since nothing would have displaced it yet.
+    c.key('user:cb-key-after')
+    expect(c.key(kept)).toBe(keptFirst)
+    // Evicted: a fresh instance, carrying the same key, so the only cost is
+    // the derivation.
+    const again = c.key(evicted)
+    expect(again).not.toBe(first)
+    expect(again.equals(first)).toBe(true)
+  }, 30000)
+})
+
+// ─── The bounded single-entry read ──────────────────────────────────────
+//
+// `entry` exists so a caller that needs to prove one thing about a namespace
+// does not have to ship the whole thing. What it records is the interesting
+// half: one entry is positive knowledge about exactly one key and says nothing
+// whatever about any other, so folding it in as if it were a namespace read
+// would arm the write precondition with a claim this client cannot support.
+
+/** A proxy that records the query string of everything the client asks for. */
+function recordingProxy(upstream: string) {
+  const searches: string[] = []
+  const s = Bun.serve({
+    port: 0,
+    fetch: req => {
+      const u = new URL(req.url)
+      searches.push(u.search)
+      return fetch(`${upstream}${u.pathname}${u.search}`, {
+        method: req.method,
+        headers: req.headers,
+        body: req.method === 'GET' || req.method === 'DELETE' ? undefined : req.body,
+        // biome-ignore lint/suspicious/noExplicitAny: duplex is not in the DOM types bun uses
+        duplex: 'half',
+      } as any)
+    },
+  })
+  return { url: `http://localhost:${s.port}`, searches, stop: () => s.stop(true) }
+}
+
+describe('single-entry read', () => {
+  test('one entry comes back decrypted, and only that entry is asked for', async () => {
+    const ns = 'user:cb-entry-one'
+    await client().push(ns, { 'a.md': 'alpha', 'b.md': 'beta' })
+    const p = recordingProxy(base)
+    try {
+      const c = new MemlawbClient({ url: p.url, passphrase: 'pw' })
+      expect(await c.entry(ns, 'a.md')).toBe('alpha')
+      // The boundedness control. Asserting the plaintext alone cannot tell this
+      // from a full pull that threw away the rest, so the wire is what proves
+      // it: exactly one request, carrying the entry view and the key.
+      expect(p.searches).toEqual(['?view=entry&key=a.md'])
+    } finally {
+      p.stop()
+    }
+  })
+
+  test('a wrong passphrase is a decrypt error naming the entry', async () => {
+    const ns = 'user:cb-entry-wrong'
+    await client().push(ns, { 'a.md': 'alpha' })
+    const wrong = new MemlawbClient({ url: base, passphrase: 'not-the-passphrase' })
+    const err = await wrong.entry(ns, 'a.md').catch(e => e)
+    expect(err).toBeInstanceOf(MemlawbDecryptError)
+    expect((err as InstanceType<typeof MemlawbDecryptError>).entryKey).toBe('a.md')
+  })
+
+  test('every refusal reaches the caller as a typed HTTP error, never as an empty read', async () => {
+    // A denial rendered as success is the defect this repo keeps finding, and
+    // this method is the shape most prone to it: "no such entry" has an
+    // obvious wrong answer, the empty string.
+    const ns = 'user:cb-entry-refusals'
+    const c = client()
+    await c.push(ns, { 'a.md': 'alpha' })
+
+    const nsGone = await c.entry('user:cb-entry-nothing', 'a.md').catch(e => e)
+    const keyGone = await c.entry(ns, 'nope.md').catch(e => e)
+
+    // Drift: the manifest keeps the key, the store loses the body.
+    const drifted = 'user:cb-entry-drift'
+    await c.push(drifted, { 'gone.md': 'body' })
+    const hash = (await c.hashes(drifted))['gone.md'] as string
+    await getStore().delete(contentPath(namespaceSlug(drifted), hash))
+    const unreadable = await c.entry(drifted, 'gone.md').catch(e => e)
+
+    expect(
+      [nsGone, keyGone, unreadable].map(
+        e => `${(e as Error).name}:${(e as InstanceType<typeof MemlawbHttpError>).code}`,
+      ),
+    ).toEqual([
+      'MemlawbHttpError:empty',
+      'MemlawbHttpError:entry_not_found',
+      'MemlawbHttpError:entry_unreadable',
+    ])
+  })
+
+  test('a 200 with no entry in it is a read failure, not a decrypt failure', async () => {
+    // The distinction the MCP preflight is built on: only a real decrypt
+    // failure may be blamed on the passphrase. A server that answers the entry
+    // view with some other 200 body must not look like a wrong key.
+    const s = rawServer(200, JSON.stringify({ version: 1, content: { entries: {} } }))
+    const c = new MemlawbClient({ url: `http://localhost:${s.port}`, passphrase: 'pw' })
+    const err = await c.entry('user:cb-entry-shape', 'a.md').catch(e => e)
+    s.stop(true)
+    expect(err).not.toBeInstanceOf(MemlawbDecryptError)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('a.md')
+  })
+
+  test('the read arms the precondition for the key it read', async () => {
+    const ns = 'user:cb-entry-arms'
+    const a = client()
+    const b = client()
+    await b.push(ns, { 'a.md': 'v1' })
+    expect(await a.entry(ns, 'a.md')).toBe('v1')
+    await b.push(ns, { 'a.md': 'v2' })
+
+    const err = await a.push(ns, { 'a.md': 'from-a' }).catch(e => e)
+    expect(err).toBeInstanceOf(MemlawbHttpError)
+    expect((err as InstanceType<typeof MemlawbHttpError>).code).toBe('stale_base_version')
+    expect((await b.pull(ns)).entries['a.md']).toBe('v2')
+  })
+
+  test('it claims nothing about the keys it did not read', async () => {
+    // The half that decides whether the record is honest. A hashes read
+    // enumerates, so a key missing from it is provably absent and a write may
+    // assert that. One entry enumerates nothing, so a write to some other key
+    // must go through unconditionally rather than assert an absence this
+    // client never observed.
+    const ns = 'user:cb-entry-unenumerated'
+    const a = client()
+    const b = client()
+    await b.push(ns, { 'a.md': 'v1' })
+    await a.entry(ns, 'a.md')
+    // b creates a key a has never heard of, in a's turn.
+    await b.push(ns, { 'other.md': 'from-b' })
+
+    await a.push(ns, { 'other.md': 'from-a' })
+    expect((await b.pull(ns)).entries['other.md']).toBe('from-a')
+  })
+
+  test('it adds to what this client knows instead of replacing it', async () => {
+    // A record that overwrote the map would drop the enumeration a hashes read
+    // had just established, silently disarming the precondition for every
+    // other key. Two-state: the same flow without the entry read must refuse,
+    // and with it must still refuse.
+    const ns = 'user:cb-entry-additive'
+    const a = client()
+    const b = client()
+    await b.push(ns, { 'a.md': 'v1', 'b.md': 'v1' })
+    await a.hashes(ns)
+    await a.entry(ns, 'a.md')
+    await b.push(ns, { 'b.md': 'from-b' })
+
+    const err = await a.push(ns, { 'b.md': 'from-a' }).catch(e => e)
+    expect((err as InstanceType<typeof MemlawbHttpError>)?.code).toBe('stale_base_version')
+    expect((await b.pull(ns)).entries['b.md']).toBe('from-b')
   })
 })
