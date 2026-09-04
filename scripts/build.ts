@@ -24,34 +24,10 @@ import { rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { BunPlugin } from 'bun'
-import { FALLBACK, loadMemoryGuide } from '../src/mcp/guide.ts'
+import { inlineGuide, resolvedGuide } from './guide-inline.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const outdir = join(root, 'dist')
-
-/** The literal scripts/build.ts rewrites; see the comment on it in guide.ts. */
-const GUIDE_SLOT = "const INLINED_GUIDE = ''"
-
-/**
- * Rewrites guide.ts on its way into the bundle so the built MCP server serves
- * SKILL.md's text. Throws rather than degrading: a silent fallback is exactly
- * the failure this exists to prevent.
- */
-function inlineGuide(text: string): BunPlugin {
-  return {
-    name: 'inline-memory-guide',
-    setup(build) {
-      build.onLoad({ filter: /src[/\\]mcp[/\\]guide\.ts$/ }, async ({ path }) => {
-        const src = await Bun.file(path).text()
-        if (!src.includes(GUIDE_SLOT)) throw new Error(`build: guide slot not found in ${path}`)
-        return {
-          contents: src.replace(GUIDE_SLOT, `const INLINED_GUIDE = ${JSON.stringify(text)}`),
-          loader: 'ts',
-        }
-      })
-    },
-  }
-}
 
 function check(result: Awaited<ReturnType<typeof Bun.build>>, what: string) {
   if (!result.success) {
@@ -60,8 +36,7 @@ function check(result: Awaited<ReturnType<typeof Bun.build>>, what: string) {
   }
 }
 
-const guide = loadMemoryGuide()
-if (guide === FALLBACK) throw new Error('build: refusing to inline the fallback guide')
+const guide = resolvedGuide()
 
 await rm(outdir, { recursive: true, force: true })
 
