@@ -98,7 +98,10 @@ Make the server safe to expose to strangers before anyone connects.
   with explicit segment matching + an ACL hook stub. **Security-critical.**
 - **Request hardening**: enforce `MAX_BODY_BYTES` even when `content-length` is
   absent (stream cap), reject unknown methods early, add security headers.
-- **Health/readiness**: `/health` already exists; add store round-trip check.
+- **Health/readiness**: `/health` reports liveness only. The store round trip
+  moved to a startup probe rather than the route: `/health` is unauthenticated,
+  so a store check there is an anonymous write against the store holding every
+  tenant's ciphertext, and echoing the store's label leaked it to anyone.
 
 ### M2 — MCP server (the headline) · ~3–4d
 `memlawb mcp` stdio subcommand wrapping the already-bundled `MemlawbClient`.
