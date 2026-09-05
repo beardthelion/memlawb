@@ -19,7 +19,7 @@
 import { mkdir, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { inlineGuide, resolvedGuide } from './guide-inline.ts'
+import { inlineGuide, inlineVersion, resolvedGuide } from './guide-inline.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const outdir = process.argv[2] ?? join(root, 'binaries')
@@ -48,6 +48,9 @@ await rm(outdir, { recursive: true, force: true })
 await mkdir(outdir, { recursive: true })
 
 const guide = resolvedGuide()
+const pkgVersion = (
+  JSON.parse(await Bun.file(join(root, 'package.json')).text()) as { version: string }
+).version
 const only = process.env.BINARY_TARGETS?.split(',').filter(Boolean)
 const targets = only?.length ? TARGETS.filter(t => only.includes(t)) : TARGETS
 
@@ -59,7 +62,7 @@ for (const target of targets) {
     target: 'bun',
     compile: { target, outfile },
     minify: true,
-    plugins: [inlineGuide(guide)],
+    plugins: [inlineGuide(guide), inlineVersion(pkgVersion)],
   })
   if (!built.success) {
     for (const log of built.logs) console.error(log)

@@ -44,3 +44,28 @@ export function inlineGuide(text: string): BunPlugin {
     },
   }
 }
+
+/** The literal src/version.ts carries; see the comment on it there. */
+const VERSION_SLOT = "const BUILT_VERSION = ''"
+
+/**
+ * Substitutes the package version into src/version.ts on its way into a bundle.
+ * Reading package.json at runtime does not survive bundling: the bundler emits
+ * it as a chunk Node refuses to load as JSON, so the Node build reported no
+ * version at all while Bun and the binary were fine.
+ */
+export function inlineVersion(value: string): BunPlugin {
+  return {
+    name: 'inline-version',
+    setup(build) {
+      build.onLoad({ filter: /src[/\\]version\.ts$/ }, async ({ path }) => {
+        const src = await Bun.file(path).text()
+        if (!src.includes(VERSION_SLOT)) throw new Error(`build: version slot not found in ${path}`)
+        return {
+          contents: src.replace(VERSION_SLOT, `const BUILT_VERSION = ${JSON.stringify(value)}`),
+          loader: 'ts',
+        }
+      })
+    },
+  }
+}

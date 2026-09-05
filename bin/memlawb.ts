@@ -20,6 +20,7 @@ import { dirname, join, sep } from 'node:path'
 import { MemlawbClient } from '../client/index.ts'
 import type { ScanMode } from '../client/secretscan.ts'
 import { generatePassphrase, renderSetupCard } from '../client/setup.ts'
+import { version } from '../src/version.ts'
 
 async function walkMd(dir: string): Promise<string[]> {
   const out: string[] = []
@@ -89,6 +90,14 @@ function cmdSetup(owner: string, url: string | undefined) {
 const [cmd, a, b] = process.argv.slice(2)
 try {
   switch (cmd) {
+    // Consumers pin a minimum: an older binary that cannot read
+    // MEMLAWB_PASSPHRASE_FILE fails with "no passphrase", which reads as the
+    // operator's mistake rather than a stale install, so they need a way to
+    // check. Read from the manifest so a release bump carries it.
+    case '--version':
+    case '-v':
+      console.log(version())
+      break
     case 'push':
       if (!a || !b) usage()
       await cmdPush(a, b)

@@ -24,7 +24,7 @@ import { rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { BunPlugin } from 'bun'
-import { inlineGuide, resolvedGuide } from './guide-inline.ts'
+import { inlineGuide, inlineVersion, resolvedGuide } from './guide-inline.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const outdir = join(root, 'dist')
@@ -37,6 +37,9 @@ function check(result: Awaited<ReturnType<typeof Bun.build>>, what: string) {
 }
 
 const guide = resolvedGuide()
+const pkgVersion = (
+  JSON.parse(await Bun.file(join(root, 'package.json')).text()) as { version: string }
+).version
 
 await rm(outdir, { recursive: true, force: true })
 
@@ -76,7 +79,7 @@ check(
     splitting: true,
     naming: { entry: 'memlawb.js' },
     external: ['@modelcontextprotocol/sdk'],
-    plugins: [inlineGuide(guide)],
+    plugins: [inlineGuide(guide), inlineVersion(pkgVersion)],
   }),
   'cli bundle',
 )
@@ -120,6 +123,17 @@ for (const entry of ['index.js', 'crypto.js', 'secretscan.js']) {
     console.error(probe.stderr.toString())
     throw new Error(`build: dist/${entry} does not load under Node`)
   }
+}
+
+// The bin needs running, not importing, and it was the entry the check above
+// did not cover: a JSON import survived bundling as a chunk Node refuses to load
+// as JSON, so `memlawb --version` was broken in the Node build while Bun and the
+// compiled binary were both fine. `--version` is the cheapest command that
+// still touches module startup.
+const binProbe = Bun.spawnSync(['node', join(outdir, 'memlawb.js'), '--version'])
+if (binProbe.exitCode !== 0 || !binProbe.stdout.toString().trim()) {
+  console.error(binProbe.stderr.toString())
+  throw new Error('build: dist/memlawb.js does not run under Node')
 }
 
 const tsc = Bun.spawnSync(['bunx', 'tsc', '-p', 'tsconfig.build.json'], {
