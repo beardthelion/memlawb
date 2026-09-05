@@ -69,7 +69,7 @@ agent / CLI / MCP
    ▼
 memlawb server  (crypto-blind — only ever sees ciphertext)
    ▼
-BlobStore: fs | s3 (Tigris/R2/AWS) | ipfs/git (planned)
+BlobStore: fs | s3 (Tigris/R2/AWS) | node (a private repo per namespace on a gitlawb node)
 ```
 
 The server is **crypto-blind**: it does delta sync, dedup, and storage entirely
@@ -253,7 +253,7 @@ version. A namespace whose manifest cannot be parsed answers
 
 ## Configuration
 
-See [`.env.example`](./.env.example). Key knobs: `STORE` (`fs`|`s3`),
+See [`.env.example`](./.env.example). Key knobs: `STORE` (`fs`|`s3`|`node`),
 `ALLOW_UNAUTHENTICATED`, `STATIC_API_KEYS` / Supabase auth, and per-namespace
 size/count limits.
 
