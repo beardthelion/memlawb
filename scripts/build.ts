@@ -41,7 +41,16 @@ const guide = resolvedGuide()
 await rm(outdir, { recursive: true, force: true })
 
 // The three client entries the exports map names. Split so `.` and `./crypto`
-// share one copy of the crypto module rather than each carrying their own.
+// carry their own copy of what they need.
+//
+// Splitting is deliberately off. It saved one copy of the crypto module across
+// `.` and `./crypto`, but `client/index.ts` re-exports crypto while
+// `client/crypto.ts` is also its own entry, and that overlap made the shared
+// chunk emit `ciphertextHash` twice on the CI runner: Node then refuses the
+// file outright with "Duplicate export". It did not reproduce locally on the
+// same Bun version, which is the argument for not chasing it: a few KB of
+// duplication is worth more than an artifact whose validity depends on which
+// machine built it.
 check(
   await Bun.build({
     entrypoints: ['client/index.ts', 'client/crypto.ts', 'client/secretscan.ts'].map(p =>
@@ -50,7 +59,7 @@ check(
     outdir,
     target: 'node',
     format: 'esm',
-    splitting: true,
+    splitting: false,
     naming: { entry: '[name].js' },
   }),
   'client bundle',
@@ -95,6 +104,23 @@ const cli = join(outdir, 'memlawb.js')
 const built = await Bun.file(cli).text()
 await Bun.write(cli, NODE_PREAMBLE + built.replace(/^#!.*\r?\n/, ''))
 await Bun.$`chmod +x ${cli}`.quiet()
+
+// Every emitted entry has to actually load under Node. The bundler can produce
+// a file that is valid to it and a syntax error to Node (a duplicate export is
+// the one this caught), and a build that ships that is worse than one that
+// fails: the tarball, the checksums and every in-repo gate all stay green.
+for (const entry of ['index.js', 'crypto.js', 'secretscan.js']) {
+  const probe = Bun.spawnSync([
+    'node',
+    '--input-type=module',
+    '-e',
+    `import('${join(outdir, entry)}')`,
+  ])
+  if (probe.exitCode !== 0) {
+    console.error(probe.stderr.toString())
+    throw new Error(`build: dist/${entry} does not load under Node`)
+  }
+}
 
 const tsc = Bun.spawnSync(['bunx', 'tsc', '-p', 'tsconfig.build.json'], {
   cwd: root,
