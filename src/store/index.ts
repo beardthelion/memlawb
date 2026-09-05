@@ -5,13 +5,33 @@
 import { config } from '../config.ts'
 import type { BlobStore } from './blobstore.ts'
 import { FsBlobStore } from './fs.ts'
+import { NodeBlobStore } from './node.ts'
 import { S3BlobStore } from './s3.ts'
 
 let cached: BlobStore | null = null
 
+/**
+ * Build the driver one name selects. Unknown names refuse rather than falling
+ * through to the filesystem: `config.store` is an unvalidated cast of the STORE
+ * variable, so `s3x` used to serve local disk silently while every gate,
+ * including the startup probe, reported a healthy store (KTD14).
+ */
+export function createStore(driver: string = config.store): BlobStore {
+  switch (driver) {
+    case 'fs':
+      return new FsBlobStore(config.dataDir)
+    case 's3':
+      return new S3BlobStore(config.s3)
+    case 'node':
+      return new NodeBlobStore(config.node)
+    default:
+      throw new Error(`unknown store driver "${driver}"; STORE must be fs, s3 or node`)
+  }
+}
+
 export function getStore(): BlobStore {
   if (cached) return cached
-  cached = config.store === 's3' ? new S3BlobStore(config.s3) : new FsBlobStore(config.dataDir)
+  cached = createStore()
   return cached
 }
 

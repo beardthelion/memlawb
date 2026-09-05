@@ -57,6 +57,7 @@
     "format": "biome format --write",
     "lint": "biome lint",
     "test:package": "bun run scripts/packed-tarball-test.ts",
+    "test:image": "bun run scripts/image-node-deps-test.ts",
     "build:binaries": "bun run scripts/build-binaries.ts"
   },
   "exports": {
