@@ -59,7 +59,7 @@ function markerOf(text: string): string {
     ['invalid-scan-mode', /which is not a scan mode/],
     ['server-refused', /refused the startup read/],
     ['no-answer', /accepted the connection but did not answer/],
-    ['passphrase-file', /MEMLAWB_PASSPHRASE_FILE/],
+    ['passphrase-file', /MEMLAWB_PASSPHRASE_FILE points at/],
   ]
   const hits = table.filter(([, re]) => re.test(text)).map(([name]) => name)
   return hits.length === 1 ? (hits[0] as string) : `other(${hits.join('+') || 'none'})`
@@ -310,6 +310,27 @@ describe('mcp startup preflight', () => {
       outcomes.push(`${apiKey} => ${r.ready ? 'ready' : markerOf(r.diagnostic)}`)
     }
     expect(outcomes).toEqual(legit.map(k => `${k} => ready`))
+  })
+
+  test('an unexpanded passphrase FILE reference is named as such, not as a bad path', async () => {
+    // The realistic mistake once a host references the file: the variable was
+    // never exported, so the host passes its own literal through. Refusing via
+    // the unreadable-file branch is safe but tells the operator their path is
+    // wrong when what is wrong is that they never set the variable, and the
+    // path in the message is the template text they would then go looking for.
+    const r = await preflight({
+      MEMLAWB_URL: url,
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal is the fixture.
+      MEMLAWB_PASSPHRASE_FILE: '${MEMLAWB_PASSPHRASE_FILE}',
+    })
+    expect(r.ready).toBe(false)
+    expect(markerOf(r.ready ? '' : r.diagnostic)).toBe('misexpansion')
+
+    // Control: a real path that simply is not there still reads as a path
+    // problem, so this distinguishes the two rather than calling every failure
+    // a misexpansion.
+    const real = await preflight({ MEMLAWB_URL: url, MEMLAWB_PASSPHRASE_FILE: '/nope/passphrase' })
+    expect(markerOf(real.ready ? '' : real.diagnostic)).toBe('passphrase-file')
   })
 
   test('the passphrase can come from a file, so it need not sit in the environment', async () => {

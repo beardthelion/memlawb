@@ -126,10 +126,17 @@ function isUnexpanded(value: string): boolean {
  * the defect, and a URL is the one value here that can legitimately carry a
  * `$`.
  */
-const MISEXPANSION_CHECKED = ['MEMLAWB_PASSPHRASE', 'MEMLAWB_API_KEY', 'MEMLAWB_NAMESPACE'] as const
+const MISEXPANSION_CHECKED = [
+  'MEMLAWB_PASSPHRASE',
+  'MEMLAWB_PASSPHRASE_FILE',
+  'MEMLAWB_API_KEY',
+  'MEMLAWB_NAMESPACE',
+] as const
 
 const MISEXPANSION_STAKE: Record<(typeof MISEXPANSION_CHECKED)[number], string> = {
   MEMLAWB_PASSPHRASE: 'Starting like this would write memory under a key nobody can reproduce.',
+  MEMLAWB_PASSPHRASE_FILE:
+    'Without it there is no passphrase to read, and the path in a file error would be the template text rather than anything to go and look at.',
   MEMLAWB_API_KEY:
     'Starting like this would send template text as the service key, which the server rejects.',
   MEMLAWB_NAMESPACE:
@@ -159,6 +166,18 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
   const url = read(env, 'MEMLAWB_URL') ?? DEFAULT_URL
   const namespace = read(env, 'MEMLAWB_NAMESPACE') ?? DEFAULT_NAMESPACE
   const apiKey = read(env, 'MEMLAWB_API_KEY')
+  // 1. Misexpansion, before anything is sent anywhere.
+  for (const name of MISEXPANSION_CHECKED) {
+    const value = read(env, name)
+    if (value && isUnexpanded(value)) {
+      return refuse(
+        `${name} still holds an unexpanded variable reference, so this server was launched with template text instead of a value. ` +
+          'Set the variable in the environment that launches the MCP server, or put the value itself in the config. ' +
+          MISEXPANSION_STAKE[name],
+      )
+    }
+  }
+
   // The passphrase may come from a file instead of the environment, and when
   // both are set the file wins. The reason is the host, not us: an agent that
   // launches this server spreads its own environment into every stdio child it
@@ -190,18 +209,6 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
       )
     }
     passphrase = trimmed
-  }
-
-  // 1. Misexpansion, before anything is sent anywhere.
-  for (const name of MISEXPANSION_CHECKED) {
-    const value = read(env, name)
-    if (value && isUnexpanded(value)) {
-      return refuse(
-        `${name} still holds an unexpanded variable reference, so this server was launched with template text instead of a value. ` +
-          'Set the variable in the environment that launches the MCP server, or put the value itself in the config. ' +
-          MISEXPANSION_STAKE[name],
-      )
-    }
   }
 
   // 2. Missing passphrase.
