@@ -125,7 +125,10 @@ bun add @gitlawb/memlawb         # Bun resolves the TypeScript source directly
 
 For a machine with neither runtime, each release attaches standalone binaries
 with a `SHA256SUMS` file. The runtime is baked in, so they are large (tens of
-MB) and need nothing installed:
+MB). The glibc builds need nothing installed, verified on a stock `debian:12-slim`
+with neither Bun nor Node present. The `-musl` builds are the exception and do
+have a prerequisite: they link against `libstdc++` and `libgcc`, so on a bare
+Alpine they fail to load until you `apk add libstdc++`.
 
 ```bash
 curl -LO https://github.com/Gitlawb/memlawb/releases/latest/download/memlawb-linux-x64
