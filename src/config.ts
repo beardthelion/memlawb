@@ -21,6 +21,18 @@ function envBool(name: string, fallback: boolean): boolean {
   return raw.trim().toLowerCase() === 'true'
 }
 
+/**
+ * Read the node-storage acknowledgement from the environment.
+ *
+ * Exported so the refusal message and the reader cannot drift: a test sets the
+ * exact value the message tells an operator to set and asserts this accepts it.
+ * The first version of that message said `=1` while this accepts only `true`,
+ * so following it exactly changed nothing.
+ */
+export function readNodeAcknowledgement(): boolean {
+  return envBool('GITLAWB_NODE_ACKNOWLEDGE', false)
+}
+
 export const config = {
   port: envInt('PORT', 8080),
 
@@ -44,6 +56,7 @@ export const config = {
     url: (process.env.GITLAWB_NODE_URL ?? '').trim().replace(/\/$/, ''),
     secret: (process.env.GITLAWB_NODE_STORE_SECRET ?? '').trim(),
     identityPath: (process.env.GITLAWB_NODE_IDENTITY_PATH ?? '').trim(),
+    acknowledged: readNodeAcknowledgement(),
   },
 
   auth: {

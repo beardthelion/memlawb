@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { config, type StoreDriver } from '../src/config.ts'
+import { config, readNodeAcknowledgement, type StoreDriver } from '../src/config.ts'
 import { sha256Hex } from '../src/hash.ts'
 import { namespaceSlug } from '../src/namespace.ts'
 import { usagePath } from '../src/quota.ts'
@@ -102,7 +102,12 @@ describe('node naming', () => {
 })
 
 describe('node config construction', () => {
-  const ok = { secret: SECRET, identityPath: '/run/secrets/node.key', url: 'http://node:9000' }
+  const ok = {
+    secret: SECRET,
+    identityPath: '/run/secrets/node.key',
+    url: 'http://node:9000',
+    acknowledged: true,
+  }
 
   test('a complete config resolves', () => {
     expect(resolveNodeConfig(ok)).toEqual(ok)
@@ -121,9 +126,63 @@ describe('node config construction', () => {
   })
 
   test('the failure names every missing setting, not only the first', () => {
-    expect(() => resolveNodeConfig({ secret: '', identityPath: '', url: '' })).toThrow(
-      /GITLAWB_NODE_STORE_SECRET.*GITLAWB_NODE_IDENTITY_PATH.*GITLAWB_NODE_URL/,
+    expect(() =>
+      resolveNodeConfig({ secret: '', identityPath: '', url: '', acknowledged: true }),
+    ).toThrow(/GITLAWB_NODE_STORE_SECRET.*GITLAWB_NODE_IDENTITY_PATH.*GITLAWB_NODE_URL/)
+  })
+
+  test('node storage is refused without an explicit acknowledgement', () => {
+    // The three consequences are not recoverable and not obvious from the
+    // config: an operator who reads only "STORE=node" learns none of them.
+    expect(() => resolveNodeConfig({ ...ok, acknowledged: false })).toThrow(
+      /GITLAWB_NODE_ACKNOWLEDGE/,
     )
+  })
+
+  test('the refusal names all three consequences, not just that one is missing', () => {
+    let message = ''
+    try {
+      resolveNodeConfig({ ...ok, acknowledged: false })
+    } catch (err) {
+      message = (err as Error).message
+    }
+    // Deletion does not erase; anchors and pins cannot be retracted; the only
+    // erasure is destroying the passphrase, which takes every namespace that
+    // owner holds rather than the one entry they meant to remove. A gate that
+    // says "you must acknowledge" without saying to what is a checkbox, not
+    // consent.
+    expect(message).toMatch(/delet\w+[^;]*(does not|never) erase|not erased/i)
+    expect(message).toMatch(/anchor|pin/i)
+    expect(message).toMatch(/passphrase/i)
+    expect(message).toMatch(/every namespace|all .*namespaces/i)
+  })
+
+  test('the value the refusal tells you to set is the value that works', () => {
+    // The first version of this gate said `=1` while the config reader accepts
+    // only `true`, so following the instruction exactly would have left the
+    // deployment refusing with the same message. A refusal that misdirects is
+    // worse than no message.
+    let message = ''
+    try {
+      resolveNodeConfig({ ...ok, acknowledged: false })
+    } catch (err) {
+      message = (err as Error).message
+    }
+    const told = /GITLAWB_NODE_ACKNOWLEDGE=(\S+?)[\s.,]/.exec(message)?.[1]
+    expect(told).toBeTruthy()
+    const before = process.env.GITLAWB_NODE_ACKNOWLEDGE
+    try {
+      process.env.GITLAWB_NODE_ACKNOWLEDGE = told
+      expect(readNodeAcknowledgement()).toBe(true)
+    } finally {
+      process.env.GITLAWB_NODE_ACKNOWLEDGE = before
+    }
+  })
+
+  test('acknowledging lets the same config through', () => {
+    // The positive control: the refusal above is the acknowledgement and not
+    // something else wrong with this config.
+    expect(resolveNodeConfig({ ...ok, acknowledged: true }).acknowledged).toBe(true)
   })
 
   test('the failure message carries no secret material', () => {
@@ -332,6 +391,7 @@ describe('node config wiring', () => {
       secret: 'test-node-store-secret',
       identityPath: '/dev/null',
       url: 'http://node.invalid',
+      acknowledged: true,
     })
   })
 

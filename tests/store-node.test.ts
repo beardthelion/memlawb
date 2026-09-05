@@ -75,6 +75,7 @@ describe('the subprocess environment', () => {
           secret: 'the-store-secret-value',
           identityPath: '/keys/identity.pem',
           url: 'http://node.test',
+          acknowledged: true,
         },
         { workdir: dir },
       )
@@ -431,7 +432,7 @@ function newDriver(secret = LIVE_SECRET): NodeBlobStore {
   const workdir = mkdtempSync(join(tmpdir(), 'memlawb-node-'))
   workdirs.push(workdir)
   return new NodeBlobStore(
-    { secret, identityPath: IDENTITY as string, url: proxy.url },
+    { secret, identityPath: IDENTITY as string, url: proxy.url, acknowledged: true },
     { workdir },
   )
 }
@@ -799,7 +800,7 @@ describe.skipIf(!live)('node driver against a real node', () => {
 
     // Same store secret, different identity: same repo and same entry leaf.
     const rotated = new NodeBlobStore(
-      { secret: LIVE_SECRET, identityPath: otherKey, url: proxy.url },
+      { secret: LIVE_SECRET, identityPath: otherKey, url: proxy.url, acknowledged: true },
       { workdir: mkdtempSync(join(tmpdir(), 'memlawb-node-rot-')) },
     )
     expect(createNodeNaming(LIVE_SECRET).repoName(slug)).toBe(repo)

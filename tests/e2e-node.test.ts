@@ -90,7 +90,12 @@ beforeAll(async () => {
     dirs.push(workdir)
     setStore(
       new NodeBlobStore(
-        { secret: SECRET, identityPath: IDENTITY as string, url: NODE_URL as string },
+        {
+          secret: SECRET,
+          identityPath: IDENTITY as string,
+          url: NODE_URL as string,
+          acknowledged: true,
+        },
         { workdir },
       ),
     )

@@ -67,6 +67,12 @@ export type NodeStoreConfig = {
   identityPath: string
   /** Base url of the node the driver clones from and pushes to. */
   url: string
+  /**
+   * The operator has acknowledged what node storage cannot undo. Not a
+   * formality: the three consequences are irreversible and none of them are
+   * visible from `STORE=node`, so this store refuses to construct without it.
+   */
+  acknowledged: boolean
 }
 
 /**
@@ -82,6 +88,7 @@ export function resolveNodeConfig(raw: NodeStoreConfig): NodeStoreConfig {
     secret: raw.secret.trim(),
     identityPath: raw.identityPath.trim(),
     url: raw.url.trim(),
+    acknowledged: raw.acknowledged,
   }
   const missing = [
     resolved.secret ? '' : 'GITLAWB_NODE_STORE_SECRET',
@@ -90,6 +97,21 @@ export function resolveNodeConfig(raw: NodeStoreConfig): NodeStoreConfig {
   ].filter(Boolean)
   if (missing.length > 0) {
     throw new Error(`node store driver requires ${missing.join(', ')}`)
+  }
+  // Consent, not a checkbox: the message states what is being agreed to. An
+  // operator who reads only `STORE=node` learns none of this, and all three are
+  // irreversible, so the refusal is the only place they are guaranteed to see
+  // it. Checked after the settings above so a misconfigured deployment hears
+  // about its missing secret rather than being asked to consent first.
+  if (!resolved.acknowledged) {
+    throw new Error(
+      'node storage needs an explicit acknowledgement: set GITLAWB_NODE_ACKNOWLEDGE=true to ' +
+        'confirm you accept that (1) deleting an entry does not erase it, since prior ' +
+        'ciphertext stays in repository history; (2) any pin or anchor already taken is ' +
+        'permanent and cannot be retracted; and (3) the only real erasure is destroying the ' +
+        'passphrase, which destroys every namespace that owner holds, not the one entry you ' +
+        'meant to remove.',
+    )
   }
   return resolved
 }

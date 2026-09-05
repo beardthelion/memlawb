@@ -257,6 +257,28 @@ See [`.env.example`](./.env.example). Key knobs: `STORE` (`fs`|`s3`|`node`),
 `ALLOW_UNAUTHENTICATED`, `STATIC_API_KEYS` / Supabase auth, and per-namespace
 size/count limits.
 
+### Node storage
+
+`STORE=node` keeps each namespace in its own private repo on a gitlawb node. It
+needs `git`, `gl` and `git-remote-gitlawb` on `PATH`; the published image carries
+them. Two things to understand before enabling it, and the server will not start
+until you acknowledge them with `GITLAWB_NODE_ACKNOWLEDGE=true`:
+
+**Deletion is not erasure.** Removing an entry takes it out of the namespace, but
+prior ciphertext stays in repository history, and any IPFS pin or Arweave anchor
+already taken is permanent. The only real erasure is destroying the passphrase,
+which destroys every namespace that owner holds rather than the one entry. The
+`memory_delete` tool says so on this store, and the client refuses a non-blocking
+secret scan against it, since a warned-through credential could not be removed.
+
+**The store secret cannot be rotated in place.** It derives every repo name and
+the at-rest wrapping key, so a new secret is a new location. Rotate with
+`scripts/node-store-migrate.ts`, which re-paths and re-wraps each namespace and
+copies entry blobs byte for byte (they are client-encrypted; the server cannot
+re-encrypt them). Losing the secret orphans every node-stored namespace
+permanently, so back it up, custody it separately from the signing identity, and
+restore from that backup once to prove the backup works.
+
 ## Security model
 
 - **Encryption:** AES-256-GCM; key = `scrypt(passphrase, salt=sha256("memlawb:"+namespace))`.
