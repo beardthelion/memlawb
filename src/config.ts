@@ -6,7 +6,7 @@
  * auth, and abuse limits.
  */
 
-export type StoreDriver = 'fs' | 's3'
+export type StoreDriver = 'fs' | 's3' | 'node'
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name]
@@ -33,6 +33,17 @@ export const config = {
     region: (process.env.S3_REGION ?? 'auto').trim(),
     accessKeyId: (process.env.S3_ACCESS_KEY_ID ?? '').trim(),
     secretAccessKey: (process.env.S3_SECRET_ACCESS_KEY ?? '').trim(),
+  },
+
+  // gitlawb node driver. The store secret derives every node-visible name and
+  // the at-rest wrapping key, so losing it orphans node-stored namespaces and
+  // disclosing it exposes manifest metadata; it is injected at runtime, kept
+  // apart from the signing identity, and rotated only by re-path-and-re-wrap
+  // migration. It is never a passphrase: entry blobs stay client-encrypted.
+  node: {
+    url: (process.env.GITLAWB_NODE_URL ?? '').trim().replace(/\/$/, ''),
+    secret: (process.env.GITLAWB_NODE_STORE_SECRET ?? '').trim(),
+    identityPath: (process.env.GITLAWB_NODE_IDENTITY_PATH ?? '').trim(),
   },
 
   auth: {
