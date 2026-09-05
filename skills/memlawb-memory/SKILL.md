@@ -109,6 +109,11 @@ Why: <why it matters — for feedback/project>
   the index; when you delete one, remove the line.
 - **Correct and prune.** If a fact turns out to be wrong or outdated, fix or
   `memory_delete` it. Stale memory is worse than none.
+- **Deleting is not always erasing.** Not every deployment can erase what it has
+  stored: on some, a delete removes the entry from your memory while earlier
+  copies remain in the store's history. `memory_delete` says so in its response
+  when that is the case. Read it before telling someone their data is gone, and
+  never save a secret on the assumption you can delete it later.
 - **Trust but verify.** A recalled fact reflects what was true when it was
   written. If it names a file, flag, or decision, confirm it still holds before
   acting on it.

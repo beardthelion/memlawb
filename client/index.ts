@@ -238,6 +238,8 @@ export class MemlawbClient {
   private readonly apiKey?: string
   private readonly passphrase: string
   private readonly scanMode: ScanMode
+  /** Erasure as of the last metadata read; see `storeErasure`. */
+  private erasureSeen: Erasure | null = null
   private readonly onScanWarning?: (findings: Finding[]) => void
   private readonly timeoutMs: number
   /** Derived keys, LRU-bounded: see MAX_TRACKED_NAMESPACES. */
@@ -311,6 +313,20 @@ export class MemlawbClient {
     }
   }
 
+  /**
+   * What this deployment's store does with deleted ciphertext, as reported by
+   * the most recent metadata read, or null if none has happened or the server
+   * reported nothing.
+   *
+   * Deliberately not a request. Erasure is constant per store, and the one
+   * caller (the startup preflight) has already read the hashes view by the time
+   * it asks. Fetching again would add a third round trip to a startup path whose
+   * bounded read count is itself pinned by a test.
+   */
+  storeErasure(): Erasure | null {
+    return this.erasureSeen
+  }
+
   /** Fetch per-key ciphertext checksums (no bodies). Empty if namespace is new. */
   async hashes(namespace: string): Promise<Record<string, string>> {
     const checksums = (await this.hashesView(namespace)).entryChecksums
@@ -349,11 +365,12 @@ export class MemlawbClient {
       entryChecksums?: Record<string, string>
       supports?: string[]
     }
+    this.erasureSeen = erasureOf(data)
     return {
       version: data.version ?? 0,
       entryChecksums: data.entryChecksums ?? {},
       supports: data.supports ?? [],
-      erasure: erasureOf(data) ?? undefined,
+      erasure: this.erasureSeen ?? undefined,
     }
   }
 

@@ -31,6 +31,35 @@ describe('memory guide', () => {
   })
 })
 
+describe('retention note (R27, U10)', () => {
+  // On fs and s3 a delete erases. On the node driver it does not: prior
+  // ciphertext stays in repository history and in any pin already taken. The
+  // guide is static and serves every deployment, so it must not claim either
+  // outcome. What it can do is tell the model the delete response is where the
+  // answer is, so it never reports "deleted" as "gone" on a store that retains.
+  test('the guide says deletion may not erase, and points at the delete response', () => {
+    const g = flat(loadMemoryGuide()).toLowerCase()
+    expect(g).toContain('not every deployment can erase')
+    expect(g).toContain('memory_delete')
+  })
+
+  test('the guide does not promise erasure', () => {
+    // The control that matters. A guide asserting deletion removes the data
+    // would be false on the node driver, which is the exact false promise R27
+    // exists to stop.
+    const g = flat(loadMemoryGuide()).toLowerCase()
+    expect(g).not.toContain('permanently deletes')
+    expect(g).not.toContain('erases it from the server')
+  })
+
+  test('the fallback carries the note too, so a broken guide load still warns', () => {
+    // guide.ts falls back to an inline copy when SKILL.md cannot be read, and
+    // that path is silent by design. A fallback without the note would drop the
+    // warning exactly when something is already wrong.
+    expect(flat(FALLBACK).toLowerCase()).toContain('not every deployment can erase')
+  })
+})
+
 describe('memory routing rule', () => {
   // Three independent rules, three controls. Asserting one shared substring
   // would prove nothing about the other two clauses.

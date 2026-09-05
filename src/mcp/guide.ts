@@ -39,6 +39,10 @@ You have durable, end-to-end-encrypted memory via the memlawb MCP tools.
   repo-shared facts belong in team memory. If a fact fits two, ask who needs
   it: you on every machine, this session only, or everyone on the repository.
 
+- **Deleting is not always erasing.** Not every deployment can erase what it
+  has stored. memory_delete says so in its response when earlier copies remain,
+  so read it before telling someone their data is gone.
+
 Tools: memory_save(key, content) · memory_recall(query, limit?) ·
 memory_search(query) · memory_list() · memory_delete(key).`
 

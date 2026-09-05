@@ -29,6 +29,7 @@
  */
 
 import { readFileSync } from 'node:fs'
+import type { Erasure } from '../../client/index.ts'
 import {
   MemlawbClient,
   MemlawbDecryptError,
@@ -298,7 +299,27 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
     return refuseHttp(err)
   }
 
-  // 7. Undecryptable namespace. This can only run once the read above reports
+  // 7. A non-blocking scan against a store that cannot erase. On fs and s3 a
+  // credential the scanner merely warned about can be deleted afterwards. On a
+  // retaining store (the node driver) it stays in repository history and in any
+  // pin already taken, so `warn` and `off` promise a cleanup this deployment
+  // cannot perform. Refused at startup rather than left to the first write,
+  // because the operator is configuring the server now rather than after a
+  // secret has already landed somewhere permanent.
+  //
+  // No extra request: this is what the hashes view above already reported, so
+  // the bounded read count this startup path is pinned to stays unchanged.
+  const erasure: Erasure | null = client.storeErasure()
+  if (erasure === 'retains' && scanMode !== 'block') {
+    return refuse(
+      `MEMLAWB_SCAN is "${scanMode}", but the store behind ${url} cannot erase what it stores: ` +
+        'a delete removes an entry from the namespace and leaves its prior ciphertext in repository ' +
+        'history, and in any pin or anchor already taken. A secret this scanner only warned about ' +
+        'could therefore never be removed. Set MEMLAWB_SCAN=block, or point this server at a store that erases.',
+    )
+  }
+
+  // 8. Undecryptable namespace. This can only run once the read above reports
   // entries: against an empty namespace nothing exists to authenticate, so a
   // wrong passphrase is indistinguishable from a first-run one and starting is
   // the correct answer. Nothing is lost by it, because the first save is what

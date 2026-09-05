@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MemlawbClient } from '../client/index.ts'
 import { preflight } from '../src/mcp/startup.ts'
+import { getStore, resetStore, setStore } from '../src/store/index.ts'
 
 const PASSPHRASE = 'correct horse battery staple'
 const WRONG = 'wrong horse battery staple'
@@ -60,10 +61,87 @@ function markerOf(text: string): string {
     ['server-refused', /refused the startup read/],
     ['no-answer', /accepted the connection but did not answer/],
     ['passphrase-file', /MEMLAWB_PASSPHRASE_FILE points at/],
+    ['retaining-scan', /cannot erase what it stores/],
   ]
   const hits = table.filter(([, re]) => re.test(text)).map(([name]) => name)
   return hits.length === 1 ? (hits[0] as string) : `other(${hits.join('+') || 'none'})`
 }
+
+describe('AE16: a non-blocking scan against a store that cannot erase', () => {
+  /** A store that reports it keeps what a delete removes, like the node driver. */
+  const retaining = () => {
+    const inner = getStore()
+    return {
+      ...inner,
+      erasure: 'retains' as const,
+      get: inner.get.bind(inner),
+      put: inner.put.bind(inner),
+      delete: inner.delete.bind(inner),
+      list: inner.list.bind(inner),
+      describe: () => 'retaining-stub',
+    }
+  }
+
+  test('scan=warn is refused, and the refusal says the store cannot erase', async () => {
+    setStore(retaining())
+    try {
+      const r = await preflight({
+        MEMLAWB_URL: url,
+        MEMLAWB_PASSPHRASE: PASSPHRASE,
+        MEMLAWB_NAMESPACE: 'user:ae16',
+        MEMLAWB_SCAN: 'warn',
+      })
+      expect(r.ready).toBe(false)
+      expect(markerOf((r as { diagnostic: string }).diagnostic)).toBe('retaining-scan')
+    } finally {
+      resetStore()
+    }
+  })
+
+  test('scan=off is refused the same way', async () => {
+    setStore(retaining())
+    try {
+      const r = await preflight({
+        MEMLAWB_URL: url,
+        MEMLAWB_PASSPHRASE: PASSPHRASE,
+        MEMLAWB_NAMESPACE: 'user:ae16',
+        MEMLAWB_SCAN: 'off',
+      })
+      expect(markerOf((r as { diagnostic: string }).diagnostic)).toBe('retaining-scan')
+    } finally {
+      resetStore()
+    }
+  })
+
+  test('scan=block against the same store is ready', async () => {
+    // The positive control: the refusal is about the scan mode, not about a
+    // retaining store being unusable.
+    setStore(retaining())
+    try {
+      const r = await preflight({
+        MEMLAWB_URL: url,
+        MEMLAWB_PASSPHRASE: PASSPHRASE,
+        MEMLAWB_NAMESPACE: 'user:ae16',
+        MEMLAWB_SCAN: 'block',
+      })
+      expect(r.ready).toBe(true)
+    } finally {
+      resetStore()
+    }
+  })
+
+  test('scan=warn against an erasing store is ready', async () => {
+    // The other control: same mode, only the store's answer differs, so the
+    // refusal above cannot be the scan mode on its own.
+    const r = await preflight({
+      MEMLAWB_URL: url,
+      MEMLAWB_PASSPHRASE: PASSPHRASE,
+      MEMLAWB_NAMESPACE: 'user:ae16-erasing',
+      MEMLAWB_SCAN: 'warn',
+    })
+    expect(r.ready).toBe(true)
+  })
+})
 
 /**
  * A server that answers each path+view differently. The one-shot `stub` below
