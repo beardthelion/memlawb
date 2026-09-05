@@ -28,6 +28,7 @@
  * diagnostic to stderr.
  */
 
+import { readFileSync } from 'node:fs'
 import {
   MemlawbClient,
   MemlawbDecryptError,
@@ -158,7 +159,38 @@ export async function preflight(env: Env = process.env): Promise<PreflightResult
   const url = read(env, 'MEMLAWB_URL') ?? DEFAULT_URL
   const namespace = read(env, 'MEMLAWB_NAMESPACE') ?? DEFAULT_NAMESPACE
   const apiKey = read(env, 'MEMLAWB_API_KEY')
-  const passphrase = read(env, 'MEMLAWB_PASSPHRASE')
+  // The passphrase may come from a file instead of the environment, and when
+  // both are set the file wins. The reason is the host, not us: an agent that
+  // launches this server spreads its own environment into every stdio child it
+  // runs, so a passphrase exported for memlawb is readable by every other MCP
+  // server the user has configured. A path is safe to spread that way; the
+  // value never is, and a file can carry permissions an environment cannot.
+  // Whoever moved the secret out of the environment should not then be
+  // overridden by a stale export of the old one.
+  const passphraseFile = read(env, 'MEMLAWB_PASSPHRASE_FILE')
+  let passphrase = read(env, 'MEMLAWB_PASSPHRASE')
+  if (passphraseFile) {
+    let contents: string
+    try {
+      contents = readFileSync(passphraseFile, 'utf8')
+    } catch (err) {
+      return refuse(
+        `MEMLAWB_PASSPHRASE_FILE points at ${oneLine(passphraseFile)}, which could not be read: ${oneLine((err as Error).message)}. ` +
+          'Check the path and that the launching user can read it. ' +
+          'Refusing to start rather than falling back to MEMLAWB_PASSPHRASE, because a silent fallback is how a namespace ends up written under a second key.',
+      )
+    }
+    // Trailing newlines are what a file written by `echo` or an editor carries,
+    // and a passphrase that differs by one byte decrypts nothing.
+    const trimmed = contents.trim()
+    if (!trimmed) {
+      return refuse(
+        `MEMLAWB_PASSPHRASE_FILE points at ${oneLine(passphraseFile)}, which is empty. ` +
+          'Write the passphrase into that file, or unset the variable to use MEMLAWB_PASSPHRASE instead.',
+      )
+    }
+    passphrase = trimmed
+  }
 
   // 1. Misexpansion, before anything is sent anywhere.
   for (const name of MISEXPANSION_CHECKED) {

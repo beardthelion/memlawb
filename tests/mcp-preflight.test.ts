@@ -21,6 +21,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { MemlawbClient } from '../client/index.ts'
 import { preflight } from '../src/mcp/startup.ts'
 
@@ -56,6 +59,7 @@ function markerOf(text: string): string {
     ['invalid-scan-mode', /which is not a scan mode/],
     ['server-refused', /refused the startup read/],
     ['no-answer', /accepted the connection but did not answer/],
+    ['passphrase-file', /MEMLAWB_PASSPHRASE_FILE/],
   ]
   const hits = table.filter(([, re]) => re.test(text)).map(([name]) => name)
   return hits.length === 1 ? (hits[0] as string) : `other(${hits.join('+') || 'none'})`
@@ -306,6 +310,109 @@ describe('mcp startup preflight', () => {
       outcomes.push(`${apiKey} => ${r.ready ? 'ready' : markerOf(r.diagnostic)}`)
     }
     expect(outcomes).toEqual(legit.map(k => `${k} => ready`))
+  })
+
+  test('the passphrase can come from a file, so it need not sit in the environment', async () => {
+    // A host that launches this server spreads its own environment into every
+    // stdio child it runs, so a passphrase exported for one server is readable
+    // by all of them. A path is not: it is useless without read access to the
+    // file, and a file can be locked down where an environment cannot.
+    const dir = mkdtempSync(join(tmpdir(), 'memlawb-pf-'))
+    const file = join(dir, 'passphrase')
+    writeFileSync(file, `${PASSPHRASE}\n`, { mode: 0o600 })
+    try {
+      const ns = 'user:pf-from-file'
+      await new MemlawbClient({ url, passphrase: PASSPHRASE }).push(ns, { 'a.md': 'stored' })
+
+      const r = await preflight({
+        MEMLAWB_URL: url,
+        MEMLAWB_NAMESPACE: ns,
+        MEMLAWB_PASSPHRASE_FILE: file,
+      })
+      expect(r.ready).toBe(true)
+
+      // The proof is that it decrypts what the value-supplied passphrase wrote,
+      // not merely that startup was allowed to proceed.
+      if (r.ready) expect(await r.client.entry(ns, 'a.md')).toBe('stored')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a passphrase file that is missing or empty is refused, naming the file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'memlawb-pf-'))
+    const empty = join(dir, 'empty')
+    writeFileSync(empty, '   \n')
+    try {
+      const gone = await preflight({ MEMLAWB_URL: url, MEMLAWB_PASSPHRASE_FILE: join(dir, 'nope') })
+      expect(gone.ready).toBe(false)
+      const goneText = gone.ready ? '' : gone.diagnostic
+      expect(markerOf(goneText)).toBe('passphrase-file')
+      expect(goneText).toContain('nope')
+
+      const blank = await preflight({ MEMLAWB_URL: url, MEMLAWB_PASSPHRASE_FILE: empty })
+      expect(blank.ready).toBe(false)
+      const blankText = blank.ready ? '' : blank.diagnostic
+      expect(markerOf(blankText)).toBe('passphrase-file')
+
+      // The two are different faults needing different moves: one is a path or
+      // a permission, the other is a file nobody wrote into. A diagnostic that
+      // cannot tell them apart sends the operator to check the wrong thing, and
+      // without this the read failure could quietly render as "empty".
+      expect(goneText).toMatch(/could not be read/i)
+      expect(blankText).toMatch(/is empty/i)
+      expect(goneText).not.toMatch(/is empty/i)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('the file wins over the variable, so a stale export cannot shadow it', async () => {
+    // If both are set the file is the deliberate one: someone who moved the
+    // secret out of the environment should not be silently overridden by a
+    // leftover export of the old value.
+    const dir = mkdtempSync(join(tmpdir(), 'memlawb-pf-'))
+    const file = join(dir, 'passphrase')
+    writeFileSync(file, PASSPHRASE)
+    try {
+      const ns = 'user:pf-precedence'
+      await new MemlawbClient({ url, passphrase: PASSPHRASE }).push(ns, { 'a.md': 'stored' })
+      const r = await preflight({
+        MEMLAWB_URL: url,
+        MEMLAWB_NAMESPACE: ns,
+        MEMLAWB_PASSPHRASE: 'the stale export',
+        MEMLAWB_PASSPHRASE_FILE: file,
+      })
+      expect(r.ready).toBe(true)
+      if (r.ready) expect(await r.client.entry(ns, 'a.md')).toBe('stored')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('the passphrase read from a file never appears in a diagnostic', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'memlawb-pf-'))
+    const file = join(dir, 'passphrase')
+    const SECRET = 'zzz-file-passphrase-must-not-appear-zzz'
+    writeFileSync(file, SECRET)
+    try {
+      // A namespace written under a different key, so the read refuses.
+      const ns = 'user:pf-leak'
+      await new MemlawbClient({ url, passphrase: PASSPHRASE }).push(ns, { 'a.md': 'stored' })
+      const r = await preflight({
+        MEMLAWB_URL: url,
+        MEMLAWB_NAMESPACE: ns,
+        MEMLAWB_PASSPHRASE_FILE: file,
+      })
+      expect(r.ready).toBe(false)
+      const d = r.ready ? '' : r.diagnostic
+      // Positive control: the refusal is the one we meant to trigger, so the
+      // absence claim below is over text that was actually produced.
+      expect(markerOf(d)).toBe('undecryptable')
+      expect(d).not.toContain(SECRET)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test('a missing passphrase is refused as missing, not as misexpansion', async () => {

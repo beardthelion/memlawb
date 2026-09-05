@@ -267,6 +267,12 @@ size/count limits.
 - **Defense in depth:** a client-side secret scanner runs before encryption and
   (by default) blocks uploads containing live-looking credentials. Override with
   `MEMLAWB_SCAN=warn|off`.
+- **Passphrase custody:** the MCP server accepts `MEMLAWB_PASSPHRASE_FILE`, a
+  path, as well as the value in `MEMLAWB_PASSPHRASE`, and the file wins when
+  both are set. Agent hosts commonly spread their own environment into every
+  stdio server they launch, so a passphrase exported for memlawb is readable by
+  all of them; a path is not, and a file can carry permissions an environment
+  cannot.
 - **Startup refusal:** the MCP server checks its configuration against the
   pinned namespace before serving a tool, and exits rather than start on one
   that would corrupt stored memory: unexpanded template text in a secret, a
