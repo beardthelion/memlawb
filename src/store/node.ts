@@ -71,6 +71,23 @@ const COMMAND_TIMEOUT_MS = 120_000
  *  rules live there rather than being re-derived here. */
 const LIST_PROBE_LEAF = 'list'
 
+/**
+ * The reason a subprocess failed, trimmed to one bounded line for an error
+ * message. An operator reading a log gets only that line, and a bare "could not
+ * push to repo <64 hex chars>" cannot tell a rate limit from a rejected
+ * signature from a node that is down. Observed: the node answers 429 "push rate
+ * limit exceeded" and none of it reached the caller.
+ *
+ * Bounded because git and gl can answer with many lines and an unbounded splice
+ * of subprocess output into an error is how a log becomes unreadable. The child
+ * environment is an allowlist that carries no secret, so this cannot echo one.
+ */
+function cause(r: CommandResult): string {
+  const text = `${r.err || r.out}`.replace(/\s+/g, ' ').trim()
+  if (!text) return `exit ${r.code}`
+  return text.length > 300 ? `${text.slice(0, 300)}...` : text
+}
+
 /** Refusal to write to a repo the node does not report private. */
 export class NodePublicRepoError extends Error {
   constructor(repo: string, found: Visibility) {
@@ -240,7 +257,7 @@ export class NodeBlobStore implements BlobStore {
       '--dir',
       this.identityDir,
     ])
-    if (r.code !== 0) throw new Error(`node store could not create repo ${repo}`)
+    if (r.code !== 0) throw new Error(`node store could not create repo ${repo}: ${cause(r)}`)
   }
 
   private async clone(repo: string, dir: string): Promise<void> {
@@ -248,7 +265,7 @@ export class NodeBlobStore implements BlobStore {
     await mkdir(dirname(dir), { recursive: true })
     const url = `gitlawb://${await this.owner()}/${repo}`
     const r = await this.command('git', ['clone', '--quiet', url, dir])
-    if (r.code !== 0) throw new Error(`node store could not clone repo ${repo}`)
+    if (r.code !== 0) throw new Error(`node store could not clone repo ${repo}: ${cause(r)}`)
     // An empty repo clones with no HEAD commit and whatever default branch the
     // local git happens to have. Pin it, so the first push lands on main.
     const head = await this.git(dir, ['rev-parse', '--verify', '--quiet', 'HEAD'])
@@ -320,7 +337,7 @@ export class NodeBlobStore implements BlobStore {
     const seen = await this.visibility(repo)
     if (seen !== 'private') throw new NodePublicRepoError(repo, seen)
     const r = await this.git(clone.dir, ['push', '--quiet', 'origin', 'HEAD:refs/heads/main'])
-    if (r.code !== 0) throw new Error(`node store could not push to repo ${repo}`)
+    if (r.code !== 0) throw new Error(`node store could not push to repo ${repo}: ${cause(r)}`)
   }
 
   /** Commits the clone holds that the node has not acknowledged. */

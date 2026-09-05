@@ -9,6 +9,7 @@
  * these tools do.
  */
 
+import type { Erasure } from '../../client/index.ts'
 import { MemlawbHttpError, type PullResult, type PushResult } from '../../client/index.ts'
 import { SecretFoundError } from '../../client/secretscan.ts'
 import { rankMemories } from './relevance.ts'
@@ -28,7 +29,7 @@ export type MemoryClient = {
   ): Promise<PushResult>
   pull(namespace: string): Promise<PullResult>
   hashes(namespace: string): Promise<Record<string, string>>
-  delete(namespace: string, entryKey: string): Promise<void>
+  delete(namespace: string, entryKey: string): Promise<Erasure | null>
 }
 
 /** Entry order by key. Not the default sort, which compares "key,value" pairs. */
@@ -312,8 +313,17 @@ export function makeTools(client: MemoryClient, defaultNamespace: string) {
     async delete(key: string, namespace?: string): Promise<ToolResult> {
       const ns = nsOf(namespace)
       try {
-        await client.delete(ns, key)
-        return ok(`deleted "${key}" from ${ns}`)
+        const erasure = await client.delete(ns, key)
+        // R27. On a retaining store the bare success text is a false promise:
+        // the entry is out of the namespace, but its prior ciphertext stays in
+        // history and in any pin already taken. The agent is what tells the user
+        // their memory is gone, so the difference has to reach this text. A
+        // server that reports no erasure gets no claim in either direction.
+        const retained =
+          erasure === 'retains'
+            ? ' Prior ciphertext is retained in this store and cannot be erased.'
+            : ''
+        return ok(`deleted "${key}" from ${ns}.${retained}`)
       } catch (e) {
         const d = denial(`Deleting "${key}"`, ns, defaultNamespace, `"${key}" is still stored.`, e)
         return fail(d ?? `delete failed: ${bounded((e as Error).message)}`)

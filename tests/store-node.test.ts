@@ -562,7 +562,21 @@ describe.skipIf(!live)('node driver against a real node', () => {
     // The push fails, not the check in front of it: the record read still gets
     // through, so what this exercises is a commit whose push died.
     proxy.setPushBroken(true)
-    await expect(store.put(first, bodyA)).rejects.toThrow(/could not push/)
+    const failed = await store.put(first, bodyA).then(
+      () => null,
+      (e: Error) => e,
+    )
+    expect(failed).toBeInstanceOf(Error)
+    expect(`${failed?.message}`).toMatch(/could not push/)
+    // The reason has to survive into the message. An operator reading a log gets
+    // only this line, and "could not push to repo <64 hex chars>" cannot tell a
+    // rate limit from a rejected signature from a node that is simply down.
+    // Observed for real: the node answers 429 "push rate limit exceeded" and the
+    // driver reported none of it, which cost an hour of looking in the wrong
+    // place. The prefix alone must not be the whole message.
+    expect(
+      `${failed?.message}`.replace(/^node store could not push to repo \S+:?/, '').trim(),
+    ).not.toBe('')
     proxy.setPushBroken(false)
 
     // And the same holds when the node is gone entirely.
@@ -759,6 +773,46 @@ describe.skipIf(!live)('node driver against a real node', () => {
     // Control: the same clone under the owning identity works, so the failure
     // above is the identity and not a broken url.
     expect(existsSync(await cloneFresh(repo))).toBe(true)
+  }, 300_000)
+
+  test('AE11: rotating the signing identity moves nothing and re-encrypts nothing', async () => {
+    // The half of AE11 that is decidable here. Where a namespace lives and how
+    // its bytes are wrapped derive from the store secret alone, so the signing
+    // identity can be replaced without re-pathing or re-writing anything. The
+    // test above shows the other half: this node binds a repo to the DID that
+    // created it, so a rotated identity cannot reach the old repo at all, which
+    // makes rotation a relocation at the node level and not a driver concern.
+    const slug = namespaceSlug('user:u19a')
+    const repo = createNodeNaming(LIVE_SECRET).repoName(slug)
+
+    const other = mkdtempSync(join(tmpdir(), 'memlawb-node-id3-'))
+    workdirs.push(other)
+    expect((await run(['gl', 'identity', 'new', '--dir', other])).code).toBe(0)
+    const otherKey = join(other, 'identity.pem')
+    // The two identities really are different, or everything below is trivially
+    // true and proves nothing.
+    const a = await run(['gl', 'whoami', '--dir', IDENTITY_DIR])
+    const b = await run(['gl', 'whoami', '--dir', other])
+    expect(/did:key:[1-9A-HJ-NP-Za-km-z]+/.exec(a.out)?.[0]).not.toBe(
+      /did:key:[1-9A-HJ-NP-Za-km-z]+/.exec(b.out)?.[0],
+    )
+
+    // Same store secret, different identity: same repo and same entry leaf.
+    const rotated = new NodeBlobStore(
+      { secret: LIVE_SECRET, identityPath: otherKey, url: proxy.url },
+      { workdir: mkdtempSync(join(tmpdir(), 'memlawb-node-rot-')) },
+    )
+    expect(createNodeNaming(LIVE_SECRET).repoName(slug)).toBe(repo)
+    const leaf = createNodeNaming(LIVE_SECRET).entryLeaf(slug, sha256Hex('rotate-probe'))
+    expect(rotated.describe()).toBe('node')
+
+    // Negative control: a different store secret does relocate, so the equality
+    // above is a property of the secret and not of every input landing on one
+    // name.
+    expect(createNodeNaming(`${LIVE_SECRET}-other`).repoName(slug)).not.toBe(repo)
+    expect(
+      createNodeNaming(`${LIVE_SECRET}-other`).entryLeaf(slug, sha256Hex('rotate-probe')),
+    ).not.toBe(leaf)
   }, 300_000)
 
   test('AE4: a fault at any mutating call in the commit leaves a complete, untorn state', async () => {

@@ -46,3 +46,19 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Packed tarball, installed and driven under Node
         run: bun run test:package
+
+  # The node storage driver's runtime dependencies are external binaries this
+  # repo does not build, so nothing in the suite above can tell whether they are
+  # present or at the version the Dockerfile pins. This job reads the image that
+  # would actually ship.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.2'
+      - name: Build the image
+        run: docker build -t memlawb:test .
+      - name: Both node binaries present and at the pinned version
+        run: bun run test:image

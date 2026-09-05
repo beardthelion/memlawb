@@ -45,6 +45,30 @@ export type PullResult = {
   entries: Record<string, string>
 }
 
+/**
+ * Whether the deployment's store actually erases on delete, as the server
+ * reports it. Declared here rather than imported from `src/`: the client is the
+ * other side of the trust boundary and does not depend on server modules.
+ * `null` is "the server did not say", which is not the same as "it erases".
+ */
+export type Erasure = 'erases' | 'retains'
+
+/** A JSON body, or null when the response carried none. A delete's outcome
+ *  does not depend on the body parsing, so a malformed one must not throw. */
+function parseOrNull(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+/** The erasure a response reports, or null when it reports none. */
+function erasureOf(body: unknown): Erasure | null {
+  const v = (body as { erasure?: unknown } | null)?.erasure
+  return v === 'erases' || v === 'retains' ? v : null
+}
+
 export type PushResult = {
   namespace: string
   version: number
@@ -302,9 +326,12 @@ export class MemlawbClient {
    * its delta computation, which must not count as the caller having read the
    * namespace; see `observed`.
    */
-  private async hashesView(
-    namespace: string,
-  ): Promise<{ version: number; entryChecksums: Record<string, string>; supports: string[] }> {
+  private async hashesView(namespace: string): Promise<{
+    version: number
+    entryChecksums: Record<string, string>
+    supports: string[]
+    erasure?: Erasure
+  }> {
     const res = await this.request('hashes', namespace, `${this.endpoint(namespace)}?view=hashes`, {
       headers: this.headers(),
     })
@@ -326,6 +353,7 @@ export class MemlawbClient {
       version: data.version ?? 0,
       entryChecksums: data.entryChecksums ?? {},
       supports: data.supports ?? [],
+      erasure: erasureOf(data) ?? undefined,
     }
   }
 
@@ -452,6 +480,16 @@ export class MemlawbClient {
 
     const key = this.key(namespace)
     const view = await this.hashesView(namespace)
+    // R28. On an erasing store a warned-through credential can be deleted; on a
+    // retaining one it is in history and in any pin already taken, permanently.
+    // That is a different bargain than the caller opted into, so refuse rather
+    // than warn, and refuse here: nothing has been encrypted or uploaded yet.
+    if (view.erasure === 'retains' && this.scanMode !== 'block') {
+      throw new Error(
+        `this deployment's store retains deleted ciphertext, so scan=${this.scanMode} is refused: ` +
+          'a secret warned through here cannot be deleted later. Use scan=block.',
+      )
+    }
     const serverHashes = view.entryChecksums
 
     const toUpload: Record<string, string> = {}
@@ -512,7 +550,7 @@ export class MemlawbClient {
   }
 
   /** Delete one entry. */
-  async delete(namespace: string, entryKey: string): Promise<void> {
+  async delete(namespace: string, entryKey: string): Promise<Erasure | null> {
     const observed = this.observed.get(namespace)
     const seen = observed?.hashes[entryKey]
     if (!seen && observed?.enumerated) {
@@ -530,7 +568,7 @@ export class MemlawbClient {
       })
       if (!res.ok) throw httpError(res, sent)
       this.record(namespace, {}, [entryKey])
-      return
+      return erasureOf(parseOrNull(res.raw))
     }
     const q = seen ? `&base=${encodeURIComponent(seen)}` : ''
     const res = await this.request(
@@ -541,6 +579,7 @@ export class MemlawbClient {
     )
     if (!res.ok) throw httpError(res, seen ? { [entryKey]: seen } : undefined)
     this.record(namespace, {}, [entryKey])
+    return erasureOf(parseOrNull(res.raw))
   }
 
   /**

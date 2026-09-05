@@ -14,6 +14,7 @@
  */
 
 import {
+  type Erasure,
   type MemlawbClient,
   MemlawbHttpError,
   type PullResult,
@@ -38,6 +39,9 @@ export class StubClient implements MemoryClient {
    */
   refuse: Record<string, string> = {}
   version = 1
+  /** What the pretend server reports about its store. `null` is a server that
+   *  reports nothing, which the tools must not read as either answer. */
+  erasure: Erasure | null = 'erases'
 
   private raise() {
     if (this.error) throw this.error
@@ -79,9 +83,10 @@ export class StubClient implements MemoryClient {
     return out
   }
 
-  async delete(_namespace: string, entryKey: string): Promise<void> {
+  async delete(_namespace: string, entryKey: string): Promise<Erasure | null> {
     this.raise()
     delete this.entries[entryKey]
+    return this.erasure
   }
 }
 
