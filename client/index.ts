@@ -362,8 +362,9 @@ export class MemlawbClient {
     const entries: Record<string, string> = {}
     // The base is derived from the bodies rather than the response's checksum
     // map, so it reflects what was actually decrypted here. This is a read the
-    // caller asked for, so it is what a later write's base is measured against
-    // — but positive knowledge only, hence `enumerated: false`; see `observed`.
+    // caller asked for, so it is what a later write's base is measured
+    // against, but positive knowledge only, hence `enumerated: false`; see
+    // `observed`.
     const seen: Record<string, string> = {}
     for (const [entryKey, b64] of Object.entries(data.content.entries)) {
       try {

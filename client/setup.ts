@@ -1,5 +1,5 @@
 /**
- * Setup card — the block a first-time user pastes into an agent's MCP config.
+ * Setup card: the block a first-time user pastes into an agent's MCP config.
  *
  * This lives in memlawb rather than in the onboarding console for one reason:
  * the passphrase. The console knows the user's service key and could happily

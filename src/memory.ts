@@ -120,7 +120,7 @@ export async function getData(namespace: string, nsSlug: string): Promise<Memory
 /**
  * Bounded view: one entry's ciphertext, selected by key.
  *
- * Deliberately NOT getData filtered after the fact — the point is that the
+ * Deliberately NOT getData filtered after the fact. The point is that the
  * store is asked for one blob, so a caller proving it can decrypt what is
  * stored pays for one entry instead of the namespace's whole 10 MB cap.
  *

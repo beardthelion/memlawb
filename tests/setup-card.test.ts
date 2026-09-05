@@ -30,7 +30,7 @@ const id = (owner: string) => ({ owner })
 const HOSTED = 'https://memory.gitlawb.com'
 const KEY = 'mk_live_example'
 
-describe('setup card — namespace authorization (AE6, R19)', () => {
+describe('setup card: namespace authorization (AE6, R19)', () => {
   test('the owner default is authorized for its owner and refused for another', () => {
     const ns = ownerNamespace('alice')
     expect(renderSetupCard('openclaude', { owner: 'alice', url: HOSTED, apiKey: KEY })).toContain(
@@ -84,7 +84,7 @@ function configBlock(card: string): unknown {
   return JSON.parse(card.slice(start, end + 1))
 }
 
-describe('setup card — the pasted block (R16)', () => {
+describe('setup card: the pasted block (R16)', () => {
   test('the block is valid JSON in the documented MCP shape', () => {
     const card = renderSetupCard('openclaude', { owner: 'alice', url: HOSTED, apiKey: KEY })
     expect(configBlock(card)).toEqual({
@@ -131,7 +131,7 @@ describe('setup card — the pasted block (R16)', () => {
   })
 })
 
-describe('setup card — the passphrase is not an input (AE10, R20)', () => {
+describe('setup card: the passphrase is not an input (AE10, R20)', () => {
   test('the render function has no passphrase parameter', () => {
     const card = renderSetupCard('openclaude', {
       owner: 'alice',
@@ -171,7 +171,7 @@ function networkRisks(src: string): string[] {
   return out
 }
 
-describe('setup card — the module makes no network call (AE10)', () => {
+describe('setup card: the module makes no network call (AE10)', () => {
   test('client/setup.ts references no module system and no network capability', () => {
     const src = readFileSync(new URL('../client/setup.ts', import.meta.url), 'utf8')
     expect(src.length).toBeGreaterThan(500)
@@ -216,7 +216,7 @@ describe('setup card — the module makes no network call (AE10)', () => {
   })
 })
 
-describe('setup card — passphrase entropy (AE10, R20)', () => {
+describe('setup card: passphrase entropy (AE10, R20)', () => {
   test('the alphabet and length give at least 128 bits', () => {
     const bits = PASSPHRASE_LENGTH * Math.log2(PASSPHRASE_ALPHABET.length)
     expect(bits).toBeGreaterThanOrEqual(128)
@@ -248,7 +248,7 @@ describe('setup card — passphrase entropy (AE10, R20)', () => {
   })
 })
 
-describe('setup card — URL rule (R23)', () => {
+describe('setup card: URL rule (R23)', () => {
   test('https is accepted', () => {
     expect(assertServiceUrl('https://memory.gitlawb.com')).toBe('https://memory.gitlawb.com')
     expect(renderSetupCard('openclaude', { owner: 'a', url: HOSTED, apiKey: KEY })).toContain(
@@ -314,7 +314,7 @@ function documentedRepoNamespace(guide: string): string {
   return withRepo[0]
 }
 
-describe('setup card — the guide and the card agree on the namespace form', () => {
+describe('setup card: the guide and the card agree on the namespace form', () => {
   test('the card renders exactly the per-repository form the guide documents', () => {
     const template = documentedRepoNamespace(loadMemoryGuide())
     const expected = template.replace('<owner>', 'alice').replace('<repo>', 'memlawb')
@@ -425,7 +425,7 @@ describe('memlawb setup (CLI)', () => {
  * the userinfo, because a validator that refused everything would pass the
  * refusals on its own.
  */
-describe('setup card — the URL carries no credentials (R23)', () => {
+describe('setup card: the URL carries no credentials (R23)', () => {
   test('a userinfo component is refused and the same url without it is accepted', () => {
     for (const [bad, good] of [
       ['https://key@memory.gitlawb.com', 'https://memory.gitlawb.com'],
@@ -503,7 +503,7 @@ const BAD_NAMES = [
 
 const GOOD_NAMES = ['a', 'ab', 'alice', 'a-b', 'a_b', 'a.b', 'ABC123', '0', 'a'.repeat(63)]
 
-describe('setup card — owner and repo are validated before they become a namespace', () => {
+describe('setup card: owner and repo are validated before they become a namespace', () => {
   test('a bad owner is refused rather than silently rewritten', () => {
     for (const [owner, why] of BAD_NAMES) {
       expect(
